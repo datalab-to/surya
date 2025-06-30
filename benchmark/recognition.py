@@ -7,6 +7,7 @@ import click
 from benchmark.utils.scoring import overlap_score, overlap_score_exact
 from surya.input.processing import convert_if_not_rgb
 from surya.debug.text import draw_text_on_image
+from surya.foundation import FoundationPredictor
 from surya.recognition import RecognitionPredictor
 from surya.settings import settings
 from surya.recognition.languages import CODE_TO_LANGUAGE
@@ -112,7 +113,8 @@ def main(
     textract_cpus: int,
     languages: str | None,
 ):
-    rec_predictor = RecognitionPredictor()
+    foundation_predictor = FoundationPredictor()
+    rec_predictor = RecognitionPredictor(foundation_predictor)
 
     split = "train"
     dataset = datasets.load_dataset(

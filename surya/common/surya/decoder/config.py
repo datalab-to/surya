@@ -45,7 +45,6 @@ class SuryaDecoderConfig(PretrainedConfig):
         sliding_window=4096,
         max_window_layers=28,
         attention_dropout=0.0,
-        unmask_image: bool = True,
         **kwargs,
     ):
         self.vocab_size = vocab_size
@@ -72,7 +71,6 @@ class SuryaDecoderConfig(PretrainedConfig):
         self.rope_theta = rope_theta
         self.rope_scaling = rope_scaling
         self.attention_dropout = attention_dropout
-        self.unmask_image = unmask_image
         # Validate the correctness of rotary position embeddings parameters
         # BC: if there is a 'type' field, move it to 'rope_type'.
         if self.rope_scaling is not None and "type" in self.rope_scaling:

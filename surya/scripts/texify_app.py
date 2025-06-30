@@ -3,6 +3,7 @@ import re
 from typing import List
 
 from surya.recognition import RecognitionPredictor
+from surya.foundation import FoundationPredictor
 from surya.common.surya.schema import TaskNames
 
 os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = (
@@ -33,7 +34,8 @@ def replace_fences(text):
 
 @st.cache_resource()
 def load_predictor():
-    return RecognitionPredictor()
+    foundation_predictor = FoundationPredictor()
+    return RecognitionPredictor(foundation_predictor)
 
 
 @st.cache_data()

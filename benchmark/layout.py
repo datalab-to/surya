@@ -5,6 +5,7 @@ import json
 import click
 
 from benchmark.utils.metrics import precision_recall
+from surya.foundation import FoundationPredictor
 from surya.layout import LayoutPredictor
 from surya.input.processing import convert_if_not_rgb
 from surya.debug.draw import draw_bboxes_on_image
@@ -20,7 +21,8 @@ import datasets
 @click.option("--max_rows", type=int, help="Maximum number of images to run benchmark on.", default=100)
 @click.option("--debug", is_flag=True, help="Run in debug mode.", default=False)
 def main(results_dir: str, max_rows: int, debug: bool):
-    layout_predictor = LayoutPredictor()
+    foundation_predictor = FoundationPredictor()
+    layout_predictor = LayoutPredictor(foundation_predictor)
 
     pathname = "layout_bench"
     # These have already been shuffled randomly, so sampling from the start is fine

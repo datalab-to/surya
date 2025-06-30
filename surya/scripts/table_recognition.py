@@ -6,6 +6,7 @@ from collections import defaultdict
 
 from surya.logging import configure_logging, get_logger
 from surya.scripts.config import CLILoader
+from surya.foundation import FoundationPredictor
 from surya.layout import LayoutPredictor
 from surya.table_rec import TableRecPredictor
 from surya.debug.draw import draw_bboxes_on_image
@@ -27,7 +28,8 @@ def table_recognition_cli(input_path: str, skip_table_detection: bool, **kwargs)
     loader = CLILoader(input_path, kwargs, highres=True)
 
     table_rec_predictor = TableRecPredictor()
-    layout_predictor = LayoutPredictor()
+    foundation_predictor = FoundationPredictor()
+    layout_predictor = LayoutPredictor(foundation_predictor)
 
     pnums = []
     prev_name = None
