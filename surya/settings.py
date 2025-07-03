@@ -76,13 +76,15 @@ class Settings(BaseSettings):
     COMPILE_DETECTOR: bool = False
 
     # Text recognition
-    RECOGNITION_MODEL_CHECKPOINT: str = "s3://text_recognition/2025_05_16"
-    RECOGNITION_MODEL_QUANTIZE: bool = False
-    RECOGNITION_MAX_TOKENS: Optional[int] = None
+    FOUNDATION_MODEL_CHECKPOINT: str = "datalab-to/foundation-2.10"
+    FOUNDATION_MODEL_QUANTIZE: bool = False
+    FOUNDATION_MAX_TOKENS: Optional[int] = None
+    FOUNDATION_CHUNK_SIZE: Optional[int] = None
+    COMPILE_FOUNDATION: bool = False
+
     RECOGNITION_BATCH_SIZE: Optional[int] = (
         None  # Defaults to 8 for CPU/MPS, 256 otherwise
     )
-    RECOGNITION_CHUNK_SIZE: Optional[int] = None
     RECOGNITION_RENDER_FONTS: Dict[str, str] = {
         "all": os.path.join(FONT_DIR, "GoNotoCurrent-Regular.ttf"),
         "zh": os.path.join(FONT_DIR, "GoNotoCJKCore.ttf"),
@@ -96,17 +98,8 @@ class Settings(BaseSettings):
     RECOGNITION_PAD_VALUE: int = 255  # Should be 0 or 255
 
     # Layout
-    LAYOUT_MODEL_CHECKPOINT: str = "s3://layout/2025_02_18"
-    LAYOUT_IMAGE_SIZE: Dict = {"height": 768, "width": 768}
-    LAYOUT_SLICE_MIN: Dict = {
-        "height": 1500,
-        "width": 1500,
-    }  # When to start slicing images
-    LAYOUT_SLICE_SIZE: Dict = {"height": 1200, "width": 1200}  # Size of slices
     LAYOUT_BATCH_SIZE: Optional[int] = None
     LAYOUT_BENCH_DATASET_NAME: str = "vikp/publaynet_bench"
-    LAYOUT_MAX_BOXES: int = 100
-    COMPILE_LAYOUT: bool = False
     ORDER_BENCH_DATASET_NAME: str = "vikp/order_bench"
 
     # Table Rec
@@ -139,10 +132,12 @@ class Settings(BaseSettings):
         )  # We need to static cache and pad to batch size for XLA, since it will recompile otherwise
 
     @computed_field
-    def LAYOUT_STATIC_CACHE(self) -> bool:
+    def FOUNDATION_STATIC_CACHE(self) -> bool:
         return (
-            self.COMPILE_ALL or self.COMPILE_LAYOUT or self.TORCH_DEVICE_MODEL == "xla"
-        )
+            self.COMPILE_ALL
+            or self.COMPILE_FOUNDATION
+            or self.TORCH_DEVICE_MODEL == "xla"
+        )  # We need to static cache and pad to batch size for XLA, since it will recompile otherwise
 
     @computed_field
     def TABLE_REC_STATIC_CACHE(self) -> bool:

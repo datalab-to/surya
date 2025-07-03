@@ -14,13 +14,12 @@ from surya.settings import settings
 
 logger = get_logger()
 
-
-class RecognitionModelLoader(ModelLoader):
+class FoundationModelLoader(ModelLoader):
     def __init__(self, checkpoint: Optional[str] = None):
         super().__init__(checkpoint)
 
         if self.checkpoint is None:
-            self.checkpoint = settings.RECOGNITION_MODEL_CHECKPOINT
+            self.checkpoint = settings.FOUNDATION_MODEL_CHECKPOINT
 
     def model(
         self,
@@ -74,9 +73,8 @@ class RecognitionModelLoader(ModelLoader):
             patch_size=config.vision_encoder.patch_size,
             merge_size=config.vision_encoder.spatial_merge_size,
             model_device=device,
+            num_beacon_tokens=config.num_beacon_tokens,
+            beacon_token_interval=config.beacon_token_interval
         )
-        config.eos_token_id = processor.eos_token_id
-        config.pad_token_id = processor.pad_token_id
-        config.bos_token_id = processor.bos_token_id
 
         return processor

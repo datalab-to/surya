@@ -4,6 +4,7 @@ import json
 import click
 
 from surya.input.processing import convert_if_not_rgb
+from surya.foundation import FoundationPredictor
 from surya.layout import LayoutPredictor
 from surya.common.polygon import PolygonBox
 from surya.settings import settings
@@ -17,7 +18,8 @@ import datasets
 @click.option("--results_dir", type=str, help="Path to JSON file with benchmark results.", default=os.path.join(settings.RESULT_DIR, "benchmark"))
 @click.option("--max_rows", type=int, help="Maximum number of images to run benchmark on.", default=None)
 def main(results_dir: str, max_rows: int):
-    layout_predictor = LayoutPredictor()
+    foundation_predictor = FoundationPredictor()
+    layout_predictor = LayoutPredictor(foundation_predictor)
     pathname = "order_bench"
     # These have already been shuffled randomly, so sampling from the start is fine
     split = "train"

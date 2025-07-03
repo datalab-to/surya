@@ -51,6 +51,7 @@ class InnerOCRTokenizer:
         self.SPECIAL_TOKEN_OFFSET = idx
         self.FORMAT_TAG_PATTERN = create_token_regex(special_tokens["formatting"])
         self.MATH_TAG_PATTERN = create_token_regex(special_tokens["math_external"])
+        self.LAYOUT_TAG_PATTERN = create_token_regex(special_tokens["layout"])
         self.SYSTEM_TAG_PATTERN = create_token_regex(special_tokens.get("system", []))
         if not special_tokens.get("system", []):
             logger.warning("Warning: No system tokens found in special_tokens")
@@ -78,6 +79,16 @@ class InnerOCRTokenizer:
                 tokens.append(
                     self.SPECIAL_TOKEN_MAPPING[tag]
                 )  # These are already offset
+                text = text[match.end() :]
+                continue
+
+            # Look for layout tokens
+            match = self.LAYOUT_TAG_PATTERN.search(text)
+            if match:
+                tag = match.group(1)
+                tokens.append(
+                    self.SPECIAL_TOKEN_MAPPING[tag]
+                )   # Layout tokens are already offset
                 text = text[match.end() :]
                 continue
 
@@ -229,7 +240,7 @@ class SuryaOCRTokenizer(S3DownloaderMixin, PreTrainedTokenizer):
     def __init__(
         self,
         special_tokens: Dict[str, list] | None = None,
-        model_checkpoint: str = settings.RECOGNITION_MODEL_CHECKPOINT,
+        model_checkpoint: str = settings.FOUNDATION_MODEL_CHECKPOINT,
         **kwargs,
     ):
         if special_tokens is None:
@@ -275,7 +286,7 @@ class SuryaOCRTokenizer(S3DownloaderMixin, PreTrainedTokenizer):
         task = kwargs.get("task", TaskNames.ocr_with_boxes)
         assert task in TASK_NAMES, f"Invalid task: {task}"
 
-        if task in [TaskNames.ocr_with_boxes, TaskNames.ocr_without_boxes]:
+        if task in [TaskNames.ocr_with_boxes, TaskNames.ocr_without_boxes, TaskNames.layout]:
             tokens = self.ocr_tokenizer._tokenize(text)
         else:
             tokens = self.qwen_tokenizer(text)["input_ids"]
@@ -312,7 +323,7 @@ class SuryaOCRTokenizer(S3DownloaderMixin, PreTrainedTokenizer):
         if isinstance(token_ids, (np.ndarray, torch.Tensor)):
             token_ids = token_ids.tolist()
 
-        if task_name in [TaskNames.ocr_with_boxes, TaskNames.ocr_without_boxes]:
+        if task_name in [TaskNames.ocr_with_boxes, TaskNames.ocr_without_boxes, TaskNames.layout]:
             decoded_text = self.ocr_tokenizer.decode(token_ids)
         else:
             decoded_text = self.qwen_tokenizer.decode(token_ids)

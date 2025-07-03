@@ -7,6 +7,7 @@ from collections import defaultdict
 
 from surya.logging import configure_logging, get_logger
 from surya.scripts.config import CLILoader
+from surya.foundation import FoundationPredictor
 from surya.recognition import RecognitionPredictor
 from surya.common.surya.schema import TaskNames
 
@@ -19,7 +20,8 @@ logger = get_logger()
 def ocr_latex_cli(input_path: str, **kwargs):
     loader = CLILoader(input_path, kwargs, highres=True)
 
-    texify_predictor = RecognitionPredictor()
+    foundation_predictor = FoundationPredictor()
+    texify_predictor = RecognitionPredictor(foundation_predictor)
     tasks = [TaskNames.block_without_boxes] * len(loader.images)
     bboxes = [[[0, 0, image.width, image.height]] for image in loader.images]
 
