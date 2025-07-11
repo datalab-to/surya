@@ -11,7 +11,7 @@ from transformers.modeling_attn_mask_utils import AttentionMaskConverter
 from transformers.modeling_outputs import BaseModelOutputWithNoAttention
 from transformers.pytorch_utils import ALL_LAYERNORM_LAYERS
 
-from surya.common.util import mark_step
+from surya.common.xla import mark_step
 
 _MAX_SQRT_GRADIENT = 1000.0
 
@@ -19,6 +19,7 @@ _MAX_SQRT_GRADIENT = 1000.0
 class WrappedEmbedding(nn.Embedding):
     def forward(self, input_ids, *args, **kwargs):
         return super().forward(input_ids)
+
 
 class SuryaADETRDecoderRMSNorm(nn.Module):
     def __init__(self, dim: int, eps: float = 1e-6):
@@ -41,9 +42,9 @@ class SuryaADETRDecoderRMSNorm(nn.Module):
         # Clamp to float16 range
         f16_info = torch.finfo(x.dtype)
         output = output.clamp(min=f16_info.min, max=f16_info.max)
-        output = torch.where(torch.isnan(output),
-                             torch.tensor(0.0, device=output.device),
-                             output)
+        output = torch.where(
+            torch.isnan(output), torch.tensor(0.0, device=output.device), output
+        )
         return output.type_as(x)
 
     def extra_repr(self):
@@ -58,7 +59,10 @@ class SuryaADETRDecoderRotaryEmbedding(nn.Module):
         super().__init__()
         self.dim = dim
         self.base = base
-        inv_freq = 1.0 / (self.base ** (torch.arange(0, self.dim, 2, dtype=torch.int64).float() / self.dim))
+        inv_freq = 1.0 / (
+            self.base
+            ** (torch.arange(0, self.dim, 2, dtype=torch.int64).float() / self.dim)
+        )
         self.register_buffer("inv_freq", tensor=inv_freq, persistent=False)
 
     @torch.no_grad()
@@ -66,10 +70,14 @@ class SuryaADETRDecoderRotaryEmbedding(nn.Module):
     def forward(self, x, position_ids, seq_len=None):
         # x: [bs, num_attention_heads, seq_len, head_size]
         self.inv_freq.to(x.device)
-        inv_freq_expanded = self.inv_freq[None, :, None].float().expand(position_ids.shape[0], -1, 1)
+        inv_freq_expanded = (
+            self.inv_freq[None, :, None].float().expand(position_ids.shape[0], -1, 1)
+        )
         position_ids_expanded = position_ids[:, None, :].float()
 
-        freqs = (inv_freq_expanded.float() @ position_ids_expanded.float()).transpose(1, 2)
+        freqs = (inv_freq_expanded.float() @ position_ids_expanded.float()).transpose(
+            1, 2
+        )
         emb = torch.cat((freqs, freqs), dim=-1)
         cos = emb.cos()
         sin = emb.sin()
@@ -119,7 +127,9 @@ def repeat_kv(hidden_states: torch.Tensor, n_rep: int) -> torch.Tensor:
     batch, num_key_value_heads, slen, head_dim = hidden_states.shape
     if n_rep == 1:
         return hidden_states
-    hidden_states = hidden_states[:, :, None, :, :].expand(batch, num_key_value_heads, n_rep, slen, head_dim)
+    hidden_states = hidden_states[:, :, None, :, :].expand(
+        batch, num_key_value_heads, n_rep, slen, head_dim
+    )
     return hidden_states.reshape(batch, num_key_value_heads * n_rep, slen, head_dim)
 
 
@@ -138,10 +148,24 @@ class SuryaADETRDecoderSdpaCrossAttention(nn.Module):
         self.num_key_value_heads = config.num_key_value_heads
         self.num_key_value_groups = self.num_attention_heads // self.num_key_value_heads
 
-        self.q_proj = nn.Linear(self.hidden_size, self.num_attention_heads * self.head_dim, bias=config.attention_bias)
-        self.k_proj = nn.Linear(self.config.encoder_hidden_size, self.num_key_value_heads * self.head_dim, bias=config.attention_bias)
-        self.v_proj = nn.Linear(self.config.encoder_hidden_size, self.num_key_value_heads * self.head_dim, bias=config.attention_bias)
-        self.o_proj = nn.Linear(self.num_attention_heads * self.head_dim, self.hidden_size, bias=True)
+        self.q_proj = nn.Linear(
+            self.hidden_size,
+            self.num_attention_heads * self.head_dim,
+            bias=config.attention_bias,
+        )
+        self.k_proj = nn.Linear(
+            self.config.encoder_hidden_size,
+            self.num_key_value_heads * self.head_dim,
+            bias=config.attention_bias,
+        )
+        self.v_proj = nn.Linear(
+            self.config.encoder_hidden_size,
+            self.num_key_value_heads * self.head_dim,
+            bias=config.attention_bias,
+        )
+        self.o_proj = nn.Linear(
+            self.num_attention_heads * self.head_dim, self.hidden_size, bias=True
+        )
         self.rotary_emb = SuryaADETRDecoderRotaryEmbedding(
             self.head_dim,
             base=config.rope_theta,
@@ -161,13 +185,19 @@ class SuryaADETRDecoderSdpaCrossAttention(nn.Module):
         _, v_len, _ = encoder_hidden_states.size()
 
         query_states = self.q_proj(hidden_states)
-        query_states = query_states.view(bsz, q_len, self.num_attention_heads, self.head_dim).transpose(1, 2)
+        query_states = query_states.view(
+            bsz, q_len, self.num_attention_heads, self.head_dim
+        ).transpose(1, 2)
 
         if self.key_states is None:
             key_states = self.k_proj(encoder_hidden_states)
             value_states = self.v_proj(encoder_hidden_states)
-            key_states = key_states.view(bsz, v_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
-            value_states = value_states.view(bsz, v_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
+            key_states = key_states.view(
+                bsz, v_len, self.num_key_value_heads, self.head_dim
+            ).transpose(1, 2)
+            value_states = value_states.view(
+                bsz, v_len, self.num_key_value_heads, self.head_dim
+            ).transpose(1, 2)
             if use_cache:
                 self._update_cache(key_states, value_states)
         else:
@@ -223,10 +253,24 @@ class SuryaADETRDecoderSdpaAttention(nn.Module):
         self.num_key_value_heads = config.num_key_value_heads
         self.num_key_value_groups = self.num_attention_heads // self.num_key_value_heads
 
-        self.q_proj = nn.Linear(self.hidden_size, self.num_attention_heads * self.head_dim, bias=config.attention_bias)
-        self.k_proj = nn.Linear(self.hidden_size, self.num_key_value_heads * self.head_dim, bias=config.attention_bias)
-        self.v_proj = nn.Linear(self.hidden_size, self.num_key_value_heads * self.head_dim, bias=config.attention_bias)
-        self.o_proj = nn.Linear(self.num_attention_heads * self.head_dim, self.hidden_size, bias=True)
+        self.q_proj = nn.Linear(
+            self.hidden_size,
+            self.num_attention_heads * self.head_dim,
+            bias=config.attention_bias,
+        )
+        self.k_proj = nn.Linear(
+            self.hidden_size,
+            self.num_key_value_heads * self.head_dim,
+            bias=config.attention_bias,
+        )
+        self.v_proj = nn.Linear(
+            self.hidden_size,
+            self.num_key_value_heads * self.head_dim,
+            bias=config.attention_bias,
+        )
+        self.o_proj = nn.Linear(
+            self.num_attention_heads * self.head_dim, self.hidden_size, bias=True
+        )
         self.rotary_emb = SuryaADETRDecoderRotaryEmbedding(
             self.head_dim,
             base=config.rope_theta,
@@ -251,16 +295,29 @@ class SuryaADETRDecoderSdpaAttention(nn.Module):
         value_states = self.v_proj(hidden_states)
 
         # Final is bsz, num_attention_heads, seq_len, head_dim
-        query_states = query_states.view(bsz, q_len, self.num_attention_heads, self.head_dim).transpose(1, 2)
-        key_states = key_states.view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
-        value_states = value_states.view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
+        query_states = query_states.view(
+            bsz, q_len, self.num_attention_heads, self.head_dim
+        ).transpose(1, 2)
+        key_states = key_states.view(
+            bsz, q_len, self.num_key_value_heads, self.head_dim
+        ).transpose(1, 2)
+        value_states = value_states.view(
+            bsz, q_len, self.num_key_value_heads, self.head_dim
+        ).transpose(1, 2)
 
         cos, sin = self.rotary_emb(value_states, position_ids, seq_len=None)
-        query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin)
+        query_states, key_states = apply_rotary_pos_emb(
+            query_states, key_states, cos, sin
+        )
 
         if use_cache and hasattr(self, "key_states"):
-            cache_kwargs = {"cache_position": cache_position, "window_attn": window_attn}
-            key_states, value_states = self._update_cache(key_states, value_states, **cache_kwargs)
+            cache_kwargs = {
+                "cache_position": cache_position,
+                "window_attn": window_attn,
+            }
+            key_states, value_states = self._update_cache(
+                key_states, value_states, **cache_kwargs
+            )
 
         key_states = repeat_kv(key_states, self.num_key_value_groups)
         value_states = repeat_kv(value_states, self.num_key_value_groups)
@@ -268,10 +325,12 @@ class SuryaADETRDecoderSdpaAttention(nn.Module):
         causal_mask = attention_mask
         if attention_mask is not None:
             # Mask is batch, head, seq_len, kv_len
-            causal_mask = causal_mask[:, :, :, :key_states.shape[-2]]
+            causal_mask = causal_mask[:, :, :, : key_states.shape[-2]]
             if cache_position is not None and self.static_cache:
                 current_pos = cache_position[-1]
-                causal_mask[:, :, :, current_pos + 1:] = torch.finfo(causal_mask.dtype).min
+                causal_mask[:, :, :, current_pos + 1 :] = torch.finfo(
+                    causal_mask.dtype
+                ).min
 
         mark_step()
         attn_output = torch.nn.functional.scaled_dot_product_attention(
@@ -299,7 +358,12 @@ class SuryaADETRDecoderSdpaAttention(nn.Module):
         self.key_states = None
 
         if self.static_cache:
-            cache_shape = (batch_size, self.num_key_value_heads, self.max_boxes, self.head_dim)
+            cache_shape = (
+                batch_size,
+                self.num_key_value_heads,
+                self.max_boxes,
+                self.head_dim,
+            )
             self.value_states = torch.zeros(cache_shape, dtype=dtype, device=device)
             self.key_states = torch.zeros(cache_shape, dtype=dtype, device=device)
 
@@ -311,7 +375,10 @@ class SuryaADETRDecoderSdpaAttention(nn.Module):
 
     def _update_static_cache(self, key_states, value_states, **cache_kwargs):
         cache_position = cache_kwargs.get("cache_position")
-        k_out, v_out = self.key_states.to(key_states.device), self.value_states.to(value_states.device)
+        k_out, v_out = (
+            self.key_states.to(key_states.device),
+            self.value_states.to(value_states.device),
+        )
 
         k_out[:, :, cache_position] = key_states.to(k_out.dtype)
         v_out[:, :, cache_position] = value_states.to(v_out.dtype)
@@ -360,36 +427,50 @@ class SuryaADETRDecoderMlp(nn.Module):
 class SuryaADETRDecoderLayer(nn.Module):
     def __init__(self, config, layer_idx, static_cache=False, max_boxes=None):
         super().__init__()
-        self.cross_pre_norm = SuryaADETRDecoderRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
-        self.temporal_pre_norm = SuryaADETRDecoderRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        self.cross_pre_norm = SuryaADETRDecoderRMSNorm(
+            config.hidden_size, eps=config.rms_norm_eps
+        )
+        self.temporal_pre_norm = SuryaADETRDecoderRMSNorm(
+            config.hidden_size, eps=config.rms_norm_eps
+        )
 
         self.temporal_block = None
         if layer_idx in config.self_attn_layers:
-            self.temporal_block = SuryaADETRDecoderSdpaAttention(config, static_cache=static_cache, max_boxes=max_boxes)
+            self.temporal_block = SuryaADETRDecoderSdpaAttention(
+                config, static_cache=static_cache, max_boxes=max_boxes
+            )
 
         self.cross_attn_block = None
         if layer_idx in config.cross_attn_layers:
             self.cross_attn_block = SuryaADETRDecoderSdpaCrossAttention(config)
 
         self.window_attn = layer_idx not in config.global_attn_layers
-        self.channel_pre_norm = SuryaADETRDecoderRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        self.channel_pre_norm = SuryaADETRDecoderRMSNorm(
+            config.hidden_size, eps=config.rms_norm_eps
+        )
         self.mlp_block = SuryaADETRDecoderMlp(config)
 
         self.double_residual_flow = getattr(config, "double_residual_flow", False)
 
     def forward(
-            self,
-            activations: torch.Tensor,
-            position_ids: torch.Tensor,
-            attention_mask: torch.Tensor,
-            encoder_hidden_states: torch.Tensor = None,
-            encoder_attention_mask: torch.Tensor = None,
-            cache_position: torch.Tensor = None,
-            use_cache: bool = None,
+        self,
+        activations: torch.Tensor,
+        position_ids: torch.Tensor,
+        attention_mask: torch.Tensor,
+        encoder_hidden_states: torch.Tensor = None,
+        encoder_attention_mask: torch.Tensor = None,
+        cache_position: torch.Tensor = None,
+        use_cache: bool = None,
     ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
         if self.double_residual_flow:
             return self.double_res_forward(
-                activations, position_ids, attention_mask, encoder_hidden_states, encoder_attention_mask, cache_position, use_cache
+                activations,
+                position_ids,
+                attention_mask,
+                encoder_hidden_states,
+                encoder_attention_mask,
+                cache_position,
+                use_cache,
             )
 
         hidden_states = activations
@@ -397,15 +478,25 @@ class SuryaADETRDecoderLayer(nn.Module):
             # Do cross-attention on encoder outputs
             cross_attn_inputs = self.cross_pre_norm(hidden_states)
             cross_attn_path = self.cross_attn_block(
-                cross_attn_inputs, encoder_hidden_states, attention_mask, encoder_attention_mask, use_cache=use_cache
+                cross_attn_inputs,
+                encoder_hidden_states,
+                attention_mask,
+                encoder_attention_mask,
+                use_cache=use_cache,
             )
             hidden_states = cross_attn_path + hidden_states
 
         if self.temporal_block is not None:
-            temporal_inputs = self.temporal_pre_norm(hidden_states)  # RMSNorm introduces slight slight differences
+            temporal_inputs = self.temporal_pre_norm(
+                hidden_states
+            )  # RMSNorm introduces slight slight differences
             temporal_path = self.temporal_block(
-                temporal_inputs, position_ids, attention_mask, cache_position=cache_position,
-                use_cache=use_cache, window_attn=self.window_attn
+                temporal_inputs,
+                position_ids,
+                attention_mask,
+                cache_position=cache_position,
+                use_cache=use_cache,
+                window_attn=self.window_attn,
             )
 
             hidden_states = temporal_path + hidden_states
@@ -433,16 +524,27 @@ class SuryaADETRDecoderLayer(nn.Module):
             # Do cross-attention on encoder outputs
             cross_attn_inputs = self.cross_pre_norm(activations)
             cross_attn_path = self.cross_attn_block(
-                cross_attn_inputs, encoder_hidden_states, attention_mask, encoder_attention_mask, use_cache=use_cache
+                cross_attn_inputs,
+                encoder_hidden_states,
+                attention_mask,
+                encoder_attention_mask,
+                use_cache=use_cache,
             )
             cross_attn_output = cross_attn_path + raw_activations
         else:
             cross_attn_output = raw_activations
 
         if self.temporal_block is not None:
-            inputs_normalized = self.temporal_pre_norm(cross_attn_output)  # RMSNorm introduces slight slight differences
+            inputs_normalized = self.temporal_pre_norm(
+                cross_attn_output
+            )  # RMSNorm introduces slight slight differences
             hidden_states = self.temporal_block(
-                inputs_normalized, position_ids, attention_mask, cache_position=cache_position, use_cache=use_cache, window_attn=self.window_attn
+                inputs_normalized,
+                position_ids,
+                attention_mask,
+                cache_position=cache_position,
+                use_cache=use_cache,
+                window_attn=self.window_attn,
             )
 
             residual = hidden_states + raw_activations
@@ -469,11 +571,19 @@ class SuryaADETRDecoderPreTrainedModel(PreTrainedModel):
 
     def _init_weights(self, module):
         if isinstance(module, SuryaADETRDecoderSdpaAttention):
-            torch.nn.init.normal_(module.q_proj.weight, mean=0.0, std=self.config.init_std)
-            torch.nn.init.normal_(module.k_proj.weight, mean=0.0, std=self.config.init_std)
-            torch.nn.init.normal_(module.v_proj.weight, mean=0.0, std=self.config.init_std)
+            torch.nn.init.normal_(
+                module.q_proj.weight, mean=0.0, std=self.config.init_std
+            )
+            torch.nn.init.normal_(
+                module.k_proj.weight, mean=0.0, std=self.config.init_std
+            )
+            torch.nn.init.normal_(
+                module.v_proj.weight, mean=0.0, std=self.config.init_std
+            )
 
-            torch.nn.init.normal_(module.o_proj.weight, mean=0.0, std=self.config.init_std)
+            torch.nn.init.normal_(
+                module.o_proj.weight, mean=0.0, std=self.config.init_std
+            )
         elif isinstance(module, nn.Linear):
             torch.nn.init.normal_(module.weight, mean=0.0, std=self.config.init_std)
             if getattr(module, "bias", None) is not None:
@@ -518,11 +628,11 @@ class SuryaADETRDecoderModel(SuryaADETRDecoderPreTrainedModel):
     """
 
     def __init__(
-            self,
-            config: PretrainedConfig,
-            embedder: nn.Module = None,
-            max_boxes: int = None,
-            static_cache: bool = False
+        self,
+        config: PretrainedConfig,
+        embedder: nn.Module = None,
+        max_boxes: int = None,
+        static_cache: bool = False,
     ):
         super().__init__(config)
         self.padding_idx = config.pad_token_id
@@ -534,13 +644,22 @@ class SuryaADETRDecoderModel(SuryaADETRDecoderPreTrainedModel):
         self.static_cache = static_cache
 
         self.layers = nn.ModuleList(
-            [SuryaADETRDecoderLayer(config, layer_idx, static_cache=static_cache, max_boxes=max_boxes) for layer_idx in range(config.num_hidden_layers)]
+            [
+                SuryaADETRDecoderLayer(
+                    config, layer_idx, static_cache=static_cache, max_boxes=max_boxes
+                )
+                for layer_idx in range(config.num_hidden_layers)
+            ]
         )
-        self.final_norm = SuryaADETRDecoderRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        self.final_norm = SuryaADETRDecoderRMSNorm(
+            config.hidden_size, eps=config.rms_norm_eps
+        )
         self.gradient_checkpointing = False
 
         self.register_buffer(
-            "normalizer", torch.tensor(self.config.hidden_size**0.5, dtype=torch.float32), persistent=False
+            "normalizer",
+            torch.tensor(self.config.hidden_size**0.5, dtype=torch.float32),
+            persistent=False,
         )
         # Initialize weights and apply final processing
         self.post_init()
@@ -566,10 +685,12 @@ class SuryaADETRDecoderModel(SuryaADETRDecoderPreTrainedModel):
         use_cache: Optional[bool] = None,
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = None,
-        prefill: bool = False
+        prefill: bool = False,
     ) -> Union[Tuple, BaseModelOutputWithNoAttention]:
         use_cache = use_cache if use_cache is not None else self.config.use_cache
-        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
+        return_dict = (
+            return_dict if return_dict is not None else self.config.use_return_dict
+        )
 
         if self.gradient_checkpointing and self.training and use_cache:
             use_cache = False
@@ -578,14 +699,23 @@ class SuryaADETRDecoderModel(SuryaADETRDecoderPreTrainedModel):
         hidden_states = inputs_embeds
 
         if use_cache and prefill:
-            self._setup_cache(self.config, hidden_states.shape[0], hidden_states.device, hidden_states.dtype)
+            self._setup_cache(
+                self.config,
+                hidden_states.shape[0],
+                hidden_states.device,
+                hidden_states.dtype,
+            )
 
         if cache_position is None:
-            cache_position = torch.arange(hidden_states.shape[1], device=hidden_states.device)
+            cache_position = torch.arange(
+                hidden_states.shape[1], device=hidden_states.device
+            )
         if position_ids is None:
             position_ids = cache_position.unsqueeze(0)
 
-        causal_mask = self._update_causal_mask(attention_mask, inputs_embeds, cache_position)
+        causal_mask = self._update_causal_mask(
+            attention_mask, inputs_embeds, cache_position
+        )
 
         all_hidden_states = () if output_hidden_states else None
         for i, residual_block in enumerate(self.layers):
@@ -593,10 +723,25 @@ class SuryaADETRDecoderModel(SuryaADETRDecoderPreTrainedModel):
                 all_hidden_states += (hidden_states,)
             if self.gradient_checkpointing and self.training:
                 hidden_states = self._gradient_checkpointing_func(
-                    residual_block.__call__, hidden_states, position_ids, causal_mask, encoder_hidden_states, encoder_attention_mask, cache_position, use_cache
+                    residual_block.__call__,
+                    hidden_states,
+                    position_ids,
+                    causal_mask,
+                    encoder_hidden_states,
+                    encoder_attention_mask,
+                    cache_position,
+                    use_cache,
                 )
             else:
-                hidden_states = residual_block(hidden_states, position_ids, causal_mask, encoder_hidden_states, encoder_attention_mask, cache_position, use_cache)
+                hidden_states = residual_block(
+                    hidden_states,
+                    position_ids,
+                    causal_mask,
+                    encoder_hidden_states,
+                    encoder_attention_mask,
+                    cache_position,
+                    use_cache,
+                )
 
         hidden_states = self.final_norm(hidden_states)
 
@@ -626,27 +771,44 @@ class SuryaADETRDecoderModel(SuryaADETRDecoderPreTrainedModel):
         sequence_length = input_tensor.shape[1]
         target_length = max(self.max_boxes, sequence_length)
 
-        diagonal = torch.full((sequence_length, target_length), fill_value=min_dtype, dtype=dtype, device=device)
+        diagonal = torch.full(
+            (sequence_length, target_length),
+            fill_value=min_dtype,
+            dtype=dtype,
+            device=device,
+        )
         causal_mask = diagonal
         if sequence_length != 1:
             # Select the upper triangular part of the matrix, but unmask current token (the diagonal)
             # triu will be the min_dtype, everything else is 0 (attended to)
             causal_mask = torch.triu(diagonal, diagonal=1)
 
-        causal_mask *= torch.arange(target_length, device=device) > cache_position.reshape(-1, 1)
-        causal_mask = causal_mask[None, None, :, :].expand(input_tensor.shape[0], 1, -1, -1)
+        causal_mask *= torch.arange(
+            target_length, device=device
+        ) > cache_position.reshape(-1, 1)
+        causal_mask = causal_mask[None, None, :, :].expand(
+            input_tensor.shape[0], 1, -1, -1
+        )
         if attention_mask is not None:
-            causal_mask = causal_mask.clone()  # copy to contiguous memory for in-place edit
+            causal_mask = (
+                causal_mask.clone()
+            )  # copy to contiguous memory for in-place edit
             if attention_mask.dim() == 2:
                 # Mask positions in the causal mask that are masked in the attention mask
                 mask_length = attention_mask.shape[-1]
-                padding_mask = causal_mask[..., :mask_length].eq(0.0) * attention_mask[:, None, None, :].eq(0.0)
-                causal_mask[..., :mask_length] = causal_mask[..., :mask_length].masked_fill(padding_mask, min_dtype)
+                padding_mask = causal_mask[..., :mask_length].eq(0.0) * attention_mask[
+                    :, None, None, :
+                ].eq(0.0)
+                causal_mask[..., :mask_length] = causal_mask[
+                    ..., :mask_length
+                ].masked_fill(padding_mask, min_dtype)
 
         if attention_mask is not None and attention_mask.device.type == "cuda":
             # Attend to all tokens in fully masked rows in the causal_mask, for example the relevant first rows when
             # using left padding. This is required by F.scaled_dot_product_attention memory-efficient attention path.
             # Details: https://github.com/pytorch/pytorch/issues/110213
-            causal_mask = AttentionMaskConverter._unmask_unattended(causal_mask, min_dtype)
+            causal_mask = AttentionMaskConverter._unmask_unattended(
+                causal_mask, min_dtype
+            )
 
         return causal_mask

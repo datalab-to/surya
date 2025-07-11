@@ -9,7 +9,7 @@ from PIL import Image
 from tqdm import tqdm
 
 from surya.common.predictor import BasePredictor
-from surya.common.util import mark_step
+from surya.common.xla import mark_step
 
 from surya.detection.loader import DetectionModelLoader
 from surya.detection.parallel import FakeExecutor

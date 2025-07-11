@@ -8,7 +8,7 @@ from surya.ocr_error.loader import OCRErrorModelLoader
 from surya.ocr_error.model.config import ID2LABEL
 from surya.ocr_error.schema import OCRErrorDetectionResult
 from surya.settings import settings
-from surya.common.util import mark_step
+from surya.common.xla import mark_step
 
 
 class OCRErrorPredictor(BasePredictor):

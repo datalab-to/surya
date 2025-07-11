@@ -103,6 +103,7 @@ def normalize_text(text: str) -> str:
     help="Comma-separated list of languages to benchmark.",
     default=None,
 )
+@click.option("--xla_eager", is_flag=True, help="Use XLA eager mode for Surya.")
 def main(
     results_dir: str,
     max_rows: int,
@@ -112,7 +113,13 @@ def main(
     tess_cpus: int,
     textract_cpus: int,
     languages: str | None,
+    xla_eager: bool = False,
 ):
+    if xla_eager:
+        import torch_xla
+
+        torch_xla.experimental.eager_mode(True)
+
     foundation_predictor = FoundationPredictor()
     rec_predictor = RecognitionPredictor(foundation_predictor)
 
