@@ -14,12 +14,11 @@ from transformers.modeling_outputs import (
 from transformers.modeling_rope_utils import ROPE_INIT_FUNCTIONS
 from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS, PreTrainedModel
 from transformers.processing_utils import Unpack
-from transformers.utils import (
-    logging,
-)
 from surya.common.surya.decoder.config import SuryaDecoderConfig
 
 from transformers.utils import is_flash_attn_2_available
+
+from surya.logging import get_logger
 
 if is_flash_attn_2_available():
     from surya.common.surya.flash_attn_utils import (
@@ -27,7 +26,7 @@ if is_flash_attn_2_available():
         flash_attn_prefill,
     )
 
-logger = logging.get_logger(__name__)
+logger = get_logger()
 
 
 class Qwen2MLP(nn.Module):
@@ -127,10 +126,9 @@ def eager_attention_forward(
 class Qwen2Attention(nn.Module):
     """Multi-headed attention from 'Attention Is All You Need' paper"""
 
-    def __init__(self, config: SuryaDecoderConfig, layer_idx: int):
+    def __init__(self, config: SuryaDecoderConfig):
         super().__init__()
         self.config = config
-        self.layer_idx = layer_idx
         self.head_dim = getattr(
             config, "head_dim", config.hidden_size // config.num_attention_heads
         )
@@ -160,7 +158,7 @@ class Qwen2Attention(nn.Module):
         attention_mask: Optional[torch.Tensor],
         past_key_value: Optional[Cache] = None,
         cache_position: Optional[torch.LongTensor] = None,
-        cache_idxs: Optional[List[int]] = None,
+        cache_idxs: Optional[torch.Tensor] = None,  # padded
         num_valid_tokens: Optional[List[int]] = None,
         text_lengths: Optional[List[int]] = None,
         prefill: bool = False,
@@ -180,7 +178,14 @@ class Qwen2Attention(nn.Module):
 
         if past_key_value is not None:
             # sin and cos are specific to RoPE models; cache_position needed for the static cache
-            # cache_idxs, num_valid_tokens, and prefill add support for our new caching mechanism 
+            # cache_idxs, num_valid_tokens, and prefill add support for our new caching mechanism
+
+            # Recompiles without this
+            # We pass in a padded cache_idxs, so we need to compute the length of the cache
+            cache_idx_length = (
+                torch.count_nonzero(cache_idxs > -1) if cache_idxs is not None else 0
+            )
+
             cache_kwargs = {
                 "sin": sin,
                 "cos": cos,
@@ -188,10 +193,11 @@ class Qwen2Attention(nn.Module):
                 "cache_idxs": cache_idxs,
                 "num_valid_tokens": num_valid_tokens,
                 "prefill": prefill,
-                "text_lengths": text_lengths
+                "text_lengths": text_lengths,
+                "cache_idx_length": cache_idx_length,
             }
             key_states, value_states = past_key_value.update(
-                key_states, value_states, self.layer_idx, cache_kwargs
+                key_states, value_states, cache_kwargs
             )
 
         attention_interface: Callable = eager_attention_forward
@@ -263,10 +269,10 @@ class Qwen2RMSNorm(nn.Module):
 
 
 class Qwen2DecoderLayer(nn.Module):
-    def __init__(self, config: SuryaDecoderConfig, layer_idx: int):
+    def __init__(self, config: SuryaDecoderConfig):
         super().__init__()
         self.hidden_size = config.hidden_size
-        self.self_attn = Qwen2Attention(config=config, layer_idx=layer_idx)
+        self.self_attn = Qwen2Attention(config=config)
         self.mlp = Qwen2MLP(config)
         self.input_layernorm = Qwen2RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
         self.post_attention_layernorm = Qwen2RMSNorm(
@@ -282,7 +288,7 @@ class Qwen2DecoderLayer(nn.Module):
         output_attentions: Optional[bool] = False,
         use_cache: Optional[bool] = False,
         cache_position: Optional[torch.LongTensor] = None,
-        cache_idxs: Optional[List[int]] = None,
+        cache_idxs: Optional[torch.Tensor] = None,
         num_valid_tokens: Optional[List[int]] = None,
         text_lengths: Optional[List[int]] = None,
         prefill: bool = False,
@@ -332,7 +338,7 @@ class Qwen2RotaryEmbedding(nn.Module):
     def __init__(self, config: SuryaDecoderConfig, device=None):
         super().__init__()
         # BC: "rope_type" was originally "type"
-        if hasattr(config, "rope_scaling") and config.rope_scaling is not None:
+        if hasattr(config, "rope_scaling") and isinstance(config.rope_scaling, dict):
             self.rope_type = config.rope_scaling.get(
                 "rope_type", config.rope_scaling.get("type")
             )
@@ -348,60 +354,18 @@ class Qwen2RotaryEmbedding(nn.Module):
         self.register_buffer("inv_freq", inv_freq, persistent=False)
         self.original_inv_freq = self.inv_freq
 
-    def _dynamic_frequency_update(self, position_ids, device):
-        """
-        dynamic RoPE layers should recompute `inv_freq` in the following situations:
-        1 - growing beyond the cached sequence length (allow scaling)
-        2 - the current sequence length is in the original scale (avoid losing precision with small sequences)
-        """
-        seq_len = torch.max(position_ids) + 1
-        if seq_len > self.max_seq_len_cached:  # growth
-            inv_freq, self.attention_scaling = self.rope_init_fn(
-                self.config, device, seq_len=seq_len
-            )
-            self.register_buffer(
-                "inv_freq", inv_freq, persistent=False
-            )  # TODO joao: may break with compilation
-            self.max_seq_len_cached = seq_len
-
-        if (
-            seq_len < self.original_max_seq_len
-            and self.max_seq_len_cached > self.original_max_seq_len
-        ):  # reset
-            # This .to() is needed if the model has been moved to a device after being initialized (because
-            # the buffer is automatically moved, but not the original copy)
-            self.original_inv_freq = self.original_inv_freq.to(device)
-            self.register_buffer("inv_freq", self.original_inv_freq, persistent=False)
-            self.max_seq_len_cached = self.original_max_seq_len
-
-    @torch.no_grad()
     def forward(self, x, position_ids):
-        if "dynamic" in self.rope_type:
-            self._dynamic_frequency_update(position_ids, device=x.device)
-
-        # Core RoPE block
         inv_freq_expanded = (
-            self.inv_freq[None, :, None].float().expand(position_ids.shape[0], -1, 1)
+            self.inv_freq[None, :, None]
+            .expand(position_ids.shape[0], -1, 1)
+            .to(dtype=x.dtype)
         )
-        position_ids_expanded = position_ids[:, None, :].float()
-        # Force float32 (see https://github.com/huggingface/transformers/pull/29285)
-        device_type = x.device.type
-        device_type = (
-            device_type
-            if isinstance(device_type, str) and device_type != "mps"
-            else "cpu"
-        )
-        with torch.autocast(device_type=device_type, enabled=False):
-            freqs = (
-                inv_freq_expanded.float().to(x.device) @ position_ids_expanded.float()
-            ).transpose(1, 2)
-            emb = torch.cat((freqs, freqs), dim=-1)
-            cos = emb.cos()
-            sin = emb.sin()
+        position_ids_expanded = position_ids[:, None, :].to(dtype=x.dtype)
 
-        # Advanced RoPE types (e.g. yarn) apply a post-processing scaling factor, equivalent to scaling attention
-        cos = cos * self.attention_scaling
-        sin = sin * self.attention_scaling
+        freqs = (inv_freq_expanded @ position_ids_expanded).transpose(1, 2)
+        emb = torch.cat((freqs, freqs), dim=-1)
+        cos = emb.cos() * self.attention_scaling
+        sin = emb.sin() * self.attention_scaling
 
         return cos.to(dtype=x.dtype), sin.to(dtype=x.dtype)
 
@@ -447,10 +411,7 @@ class SuryaDecoderModel(Qwen2PreTrainedModel):
         self.vocab_size = config.vocab_size
 
         self.layers = nn.ModuleList(
-            [
-                Qwen2DecoderLayer(config, layer_idx)
-                for layer_idx in range(config.num_hidden_layers)
-            ]
+            [Qwen2DecoderLayer(config) for _ in range(config.num_hidden_layers)]
         )
         self.norm = Qwen2RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
         self.rotary_emb = Qwen2RotaryEmbedding(config=config)
@@ -470,7 +431,7 @@ class SuryaDecoderModel(Qwen2PreTrainedModel):
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = None,
         cache_position: Optional[torch.LongTensor] = None,
-        cache_idxs: Optional[List[int]] = None,
+        cache_idxs: Optional[torch.Tensor] = None,
         num_valid_tokens: Optional[List[int]] = None,
         text_lengths: Optional[List[int]] = None,
         prefill: bool = False,
@@ -482,33 +443,30 @@ class SuryaDecoderModel(Qwen2PreTrainedModel):
         )
 
         if inputs_embeds is None:
-            raise ValueError(
-                "You must specify inputs_embeds"
-            )
+            raise ValueError("You must specify inputs_embeds")
 
         if cache_position is None:
-            raise ValueError(
-                "You must specify cache_position"
-            )
+            raise ValueError("You must specify cache_position")
 
         if position_ids is None:
-            raise ValueError(
-                "You must specify position_ids"
-            )
+            raise ValueError("You must specify position_ids")
 
         hidden_states = inputs_embeds
-        causal_mask = attention_mask        # We make the 4D mask in the combined model when needed
+        causal_mask = (
+            attention_mask  # We make the 4D mask in the combined model when needed
+        )
 
         # create position embeddings to be shared across the decoder layers
         position_embeddings = self.rotary_emb(hidden_states, position_ids)
 
         # decoder layers
-        for decoder_layer in self.layers[: self.config.num_hidden_layers]:
+        for i in range(self.config.num_hidden_layers):
+            decoder_layer = self.layers[i]
             layer_outputs = decoder_layer(
                 hidden_states,
                 attention_mask=causal_mask,
                 position_ids=position_ids,
-                past_key_value=past_key_values,
+                past_key_value=past_key_values.layer_caches[i],
                 output_attentions=output_attentions,
                 use_cache=use_cache,
                 cache_position=cache_position,

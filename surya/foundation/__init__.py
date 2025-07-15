@@ -1,19 +1,19 @@
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 from typing import List, Optional, Tuple
 from collections import deque
 
 import cv2
+import math
 import numpy as np
 import torch
 from PIL import Image
 from tqdm import tqdm
 import torch.nn.functional as F
-from transformers import QuantizedCacheConfig
 
-from surya.common.surya import SuryaModelOutput
-from surya.common.util import mark_step
+from surya.common.xla import mark_step, get_nearest_pad
 from surya.common.predictor import BasePredictor
 
 from surya.foundation.loader import FoundationModelLoader
@@ -21,9 +21,11 @@ from surya.foundation.util import (
     detect_repeat_token,
 )
 from surya.common.surya.schema import TaskNames
-from surya.foundation.cache import (
+
+from surya.foundation.cache.dynamic import (  # noqa: F401
     ContinuousBatchingCache,
-)
+)  # noqa: F401
+from surya.foundation.cache.static import StaticOpsContinuousBatchingCache
 from surya.settings import settings
 from surya.logging import get_logger, configure_logging
 
@@ -61,13 +63,14 @@ class FoundationPrompt:
 
 class FoundationPredictor(BasePredictor):
     model_loader_cls = FoundationModelLoader
-    batch_size = settings.RECOGNITION_BATCH_SIZE        # Default to the recognition batch size
+    batch_size = (
+        settings.RECOGNITION_BATCH_SIZE
+    )  # Default to the recognition batch size
     torch_dtype = None  # No default, loader picks the dtype based on device properties - bf16/fp16
-    default_batch_sizes = {"cpu": 32, "mps": 64, "cuda": 256, "xla": 128}
+    default_batch_sizes = {"cpu": 32, "mps": 64, "cuda": 256, "xla": 64}
     encoder_chunk_size: int = 4096  # Default chunk size
-    encoder_chunk_sizes = {"cpu": 4096, "mps": 4096, "cuda": 32768, "xla": 32768}
-    min_prefill_ratio: int = 0.2
-    min_trim_length: int = 50
+    encoder_chunk_sizes = {"cpu": 4096, "mps": 4096, "cuda": 32768, "xla": 4096}
+    min_prefill_ratio: int = 0.8
     tasks = {
         TaskNames.ocr_with_boxes: {
             "needs_bboxes": True,
@@ -86,7 +89,7 @@ class FoundationPredictor(BasePredictor):
         },
         TaskNames.layout: {
             "needs_bboxes": False,
-            "img_size": (1024, 1024),
+            "img_size": (1024, 1024),  # 1369 max tokens
             "max_tokens": 200,
         },
     }
@@ -111,7 +114,11 @@ class FoundationPredictor(BasePredictor):
             device=self.model.device,
         )
 
-        self.pad_to_multiple = 512 if settings.FOUNDATION_STATIC_CACHE else None
+        self.pad_to_multiple = (
+            settings.FOUNDATION_PAD_TO_NEAREST
+            if settings.FOUNDATION_STATIC_CACHE
+            else None
+        )
 
     def get_encoder_chunk_size(self) -> int:
         if settings.FOUNDATION_CHUNK_SIZE is not None:
@@ -123,14 +130,20 @@ class FoundationPredictor(BasePredictor):
                 chunk_size = self.encoder_chunk_sizes[settings.TORCH_DEVICE_MODEL]
         return chunk_size
 
-    def setup_cache(self, batch_size: int, max_cache_len: int):
-        self.kv_cache = ContinuousBatchingCache(
+    def setup_cache(self, batch_size: int, max_image_tokens: int, max_text_tokens: int):
+        # Pad to multiple of sliding_window
+        max_image_tokens = (
+            math.ceil(max_image_tokens / self.model.config.sliding_window)
+            * self.model.config.sliding_window
+        )
+        max_cache_len = max_image_tokens + max_text_tokens
+        self.kv_cache = StaticOpsContinuousBatchingCache(
             self.model.config,
             batch_size,
             max_cache_len,
             text_sliding_window=self.model.config.sliding_window,
             device=self.model.device,
-            dtype=self.model.dtype
+            dtype=self.model.dtype,
         )
         self.prompt_queue.clear()
         self.batch_prompt_mapping = {i: None for i in range(batch_size)}
@@ -178,15 +191,20 @@ class FoundationPredictor(BasePredictor):
 
         return batch
 
-    def process_outputs(self, outputs: SuryaModelOutput, max_lookahead_tokens: Optional[int]=None) -> ContinuousBatchOutput:
+    def process_outputs(
+        self, outputs, max_lookahead_tokens: Optional[int] = None
+    ) -> ContinuousBatchOutput:
         # Predictions are multi-token
         lm_logits = outputs["lm_logits"].float()  # shape: [batch_size, seq_len, V]
         bbox_logits = outputs["bbox_logits"].float()  # shape: [batch_size, seq_len, 6]
 
-        if max_lookahead_tokens is not None and lm_logits.shape[1] > max_lookahead_tokens + 1:
-            lm_logits = lm_logits[:, :max_lookahead_tokens + 1, :]
-            bbox_logits = bbox_logits[:, :max_lookahead_tokens + 1, :]
-        
+        if (
+            max_lookahead_tokens is not None
+            and lm_logits.shape[1] > max_lookahead_tokens + 1
+        ):
+            lm_logits = lm_logits[:, : max_lookahead_tokens + 1, :]
+            bbox_logits = bbox_logits[:, : max_lookahead_tokens + 1, :]
+
         # Get predictions
         preds = torch.argmax(lm_logits, dim=-1)
         input_ids = preds.to(torch.long)
@@ -204,7 +222,7 @@ class FoundationPredictor(BasePredictor):
             preds=preds,
             bbox_preds=box_preds,
             scores=scores,
-            token_probs=token_probs
+            token_probs=token_probs,
         )
 
     # Make space for beacon tokens to be inserted while keeping the same seq len across all batch elements
@@ -212,53 +230,79 @@ class FoundationPredictor(BasePredictor):
     # with the causal mask of flash attention, and we are careful to ignore this pad token when inserting
     # into cache
     def maybe_insert_beacon_tokens(
-        self,
-        input_ids: torch.Tensor,
-        num_predicted_tokens: torch.Tensor
+        self, input_ids: torch.Tensor, num_predicted_tokens: torch.Tensor
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        batch_size, seq_len = input_ids.shape       # seq_len can be >1 - In case of multi-token predictions
-        
+        batch_size, seq_len = (
+            input_ids.shape
+        )  # seq_len can be >1 - In case of multi-token predictions
+
         # num_predicted tokens **does not include** the current new input_ids, this number is updated **after beacon tokens are inserted**
-        token_positions = num_predicted_tokens + torch.arange(1, seq_len + 1, device=input_ids.device).unsqueeze(0)
-        beacon_positions = (token_positions % self.beacon_token_interval == 0)
+        token_positions = num_predicted_tokens + torch.arange(
+            1, seq_len + 1, device=input_ids.device
+        ).unsqueeze(0)
+        beacon_positions = token_positions % self.beacon_token_interval == 0
 
         # If no beacons needed, return original input
         needs_beacon = beacon_positions.any(dim=1)  # shape: [batch_size]
         if not needs_beacon.any():
-            return input_ids, torch.ones(batch_size, dtype=torch.long, device=input_ids.device) * seq_len
-        
-        beacon_insert_pos = torch.zeros(batch_size, dtype=torch.long, device=input_ids.device)
-        for i in range(batch_size):
-            if needs_beacon[i]:
-                # Find first position that needs beacon
-                beacon_insert_pos[i] = torch.where(beacon_positions[i])[0]
-      
+            return input_ids, torch.ones(
+                batch_size, dtype=torch.long, device=input_ids.device
+            ) * seq_len
+
+        beacon_insert_pos = torch.argmax(beacon_positions.float(), dim=1)
+
         # Padded input ids.
-        new_input_ids = torch.full((batch_size, seq_len + 1), self.device_pad_token, 
-                                dtype=input_ids.dtype, device=input_ids.device)
-        
-        # Fill in tokens for each sequence
-        for i in range(batch_size):
-            if needs_beacon[i]:
-                insert_pos = beacon_insert_pos[i]
-                new_input_ids[i, insert_pos] = self.device_beacon_token
-                if insert_pos > 0:
-                    new_input_ids[i, :insert_pos] = input_ids[i, :insert_pos]
-                new_input_ids[i, insert_pos+1:] = input_ids[i, insert_pos:]
-            else:
-                new_input_ids[i, 1:] = input_ids[i, :]
-        
-        # Calculate valid token counts for both padded and non padded sequences
-        valid_token_counts = torch.where(
-            needs_beacon, 
-            torch.tensor(seq_len + 1, device=input_ids.device),
-            torch.tensor(seq_len, device=input_ids.device)
+        new_input_ids = torch.full(
+            (batch_size, seq_len + 1),
+            self.device_pad_token,
+            dtype=input_ids.dtype,
+            device=input_ids.device,
         )
-        
+
+        # Create indices for vectorized operations
+        batch_indices = torch.arange(batch_size, device=input_ids.device).unsqueeze(1)
+        seq_indices = torch.arange(seq_len, device=input_ids.device).unsqueeze(0)
+
+        # Calculate target positions for each token
+        # For sequences with beacons: tokens at pos >= beacon_insert_pos get shifted by +1
+        # For sequences without beacons: all tokens get shifted by +1 (start at position 1)
+        beacon_pos_expanded = beacon_insert_pos.unsqueeze(1)
+        needs_beacon_expanded = needs_beacon.unsqueeze(1)
+
+        # Calculate shift amount for each position
+        shift_amount = torch.where(
+            needs_beacon_expanded,
+            (
+                seq_indices >= beacon_pos_expanded
+            ).long(),  # Shift by 1 if pos >= beacon_pos
+            torch.ones_like(
+                seq_indices
+            ),  # Shift by 1 for all positions (no beacon case)
+        )
+
+        target_positions = seq_indices + shift_amount
+
+        # Use advanced indexing to place all tokens at once
+        new_input_ids[batch_indices, target_positions] = input_ids
+
+        # Insert beacon tokens at the correct positions
+        new_input_ids[needs_beacon, beacon_insert_pos[needs_beacon]] = (
+            self.device_beacon_token
+        )
+
+        # Calculate valid token counts for both padded and non padded sequences
+        valid_token_counts = torch.where(needs_beacon, seq_len + 1, seq_len).to(
+            dtype=torch.long, device=input_ids.device
+        )
+
         return new_input_ids, valid_token_counts
 
-    def decode(self, current_inputs: Optional[ContinuousBatchInput] = None, max_lookahead_tokens: Optional[int] = None):
-        # Note - If we want to use the outputs from the non-last token, we 
+    def decode(
+        self,
+        current_inputs: Optional[ContinuousBatchInput] = None,
+        max_lookahead_tokens: Optional[int] = None,
+    ):
+        # Note - If we want to use the outputs from the non-last token, we
         # need to set the cache position manually to ensure causality. The default
         # behavior only works for the last token currently
         input_ids = current_inputs.input_ids
@@ -268,7 +312,7 @@ class FoundationPredictor(BasePredictor):
         batch_size = input_ids.shape[0]
 
         # Pre-shift the attention mask based on the cache update
-        self.kv_cache.maybe_shift_attention_mask(
+        self.kv_cache.decode_attention_mask_update(
             num_valid_tokens=num_valid_tokens, cache_idxs=list(range(batch_size))
         )
         with settings.INFERENCE_MODE():
@@ -279,19 +323,25 @@ class FoundationPredictor(BasePredictor):
                 use_cache=True,
                 past_key_values=self.kv_cache,
                 prefill=False,
-                num_valid_tokens=num_valid_tokens
+                num_valid_tokens=num_valid_tokens,
             )
 
-        processed_output: ContinuousBatchOutput = self.process_outputs(outputs, max_lookahead_tokens=max_lookahead_tokens)
-        
+        processed_output: ContinuousBatchOutput = self.process_outputs(
+            outputs, max_lookahead_tokens=max_lookahead_tokens
+        )
+
         input_ids = processed_output.input_ids
 
         # Update this **before** inserting beacon tokens
         num_new_tokens = input_ids.shape[1]
         num_predicted_tokens += num_new_tokens
 
-        input_ids, num_valid_tokens = self.maybe_insert_beacon_tokens(input_ids, num_predicted_tokens)
-        position_ids = position_ids[:, -1:] + torch.arange(1, input_ids.shape[1] + 1, device=input_ids.device)
+        input_ids, num_valid_tokens = self.maybe_insert_beacon_tokens(
+            input_ids, num_predicted_tokens
+        )
+        position_ids = position_ids[:, -1:] + torch.arange(
+            1, input_ids.shape[1] + 1, device=input_ids.device
+        )
         # Some of the input sequences may now have left padding tokens, so we want to account for that
         # offset is a per-batch offset of the position_ids
         offset = (input_ids.shape[1] - num_valid_tokens).unsqueeze(1)
@@ -301,7 +351,7 @@ class FoundationPredictor(BasePredictor):
             input_ids=input_ids,
             position_ids=position_ids,
             num_valid_tokens=num_valid_tokens,
-            num_predicted_tokens=num_predicted_tokens
+            num_predicted_tokens=num_predicted_tokens,
         )
 
         return new_input, processed_output
@@ -322,20 +372,30 @@ class FoundationPredictor(BasePredictor):
         """
         # No padding
         if new_seq_len == input_ids.shape[1]:
-            return input_ids, position_ids[:, -1:] + torch.arange(1, new_seq_len +1, device=self.model.device)
+            return input_ids, position_ids[:, -1:] + torch.arange(
+                1, new_seq_len + 1, device=self.model.device
+            )
 
         pad_len = new_seq_len - input_ids.shape[1]
-        padded_input_ids = torch.nn.functional.pad(input_ids, (pad_len, 0), value=self.device_pad_token)
+        padded_input_ids = torch.nn.functional.pad(
+            input_ids, (pad_len, 0), value=self.device_pad_token
+        )
 
         # Since we have **left padding**, offset the new position_ids by the amount of padding
         # This ensures that the **true tokens** get the correct position_ids
         # The position_ids assigned to pad tokens do not matter. They are not cached, and not used for outputs
-        updated_position_ids = position_ids[:, -1:] + torch.arange(1, new_seq_len + 1, device=self.model.device)
+        updated_position_ids = position_ids[:, -1:] + torch.arange(
+            1, new_seq_len + 1, device=self.model.device
+        )
         updated_position_ids -= pad_len
 
         return padded_input_ids, updated_position_ids
 
-    def prefill(self, current_inputs: Optional[ContinuousBatchInput] = None, max_lookahead_tokens: Optional[int] = None):
+    def prefill(
+        self,
+        current_inputs: Optional[ContinuousBatchInput] = None,
+        max_lookahead_tokens: Optional[int] = None,
+    ):
         logger.debug(f"Prefilling {self.num_empty_slots} slots")
         prompts: List[FoundationPrompt] = [
             self.prompt_queue.popleft()
@@ -355,64 +415,136 @@ class FoundationPredictor(BasePredictor):
             ],  # Pass math mode to the processor
         )
         processed_inputs = self.processor(
-            batch_input, padding_side="left", device=self.model.device, pad_to_multiple=self.pad_to_multiple
-        ).to(device=self.model.device)
+            batch_input,
+            padding_side="left",
+            device=self.model.device,
+            pad_to_multiple=self.pad_to_multiple,
+        )
 
-        input_ids = processed_inputs["input_ids"].to(dtype=torch.long)
+        input_ids = processed_inputs["input_ids"].to(
+            device=self.model.device, dtype=torch.long
+        )
         image_tiles = processed_inputs["image_tiles"].to(dtype=self.model.dtype)
         grid_thw = processed_inputs["grid_thw"].to(dtype=torch.long)
-        attention_mask = processed_inputs["attention_mask"].to(dtype=torch.long)
-        position_ids = processed_inputs["position_ids"].to(dtype=torch.long)
+        attention_mask = processed_inputs["attention_mask"].to(
+            device=self.model.device, dtype=torch.long
+        )
+        position_ids = processed_inputs["position_ids"].to(
+            device=self.model.device, dtype=torch.long
+        )
         valid_batch_size = len(idxs_to_merge)
+        cache_idxs = torch.tensor(
+            idxs_to_merge, device=self.model.device, dtype=torch.long
+        )
+        cache_idxs_padded = cache_idxs
+        image_tile_length = torch.tensor(image_tiles.shape[0]).to(
+            dtype=torch.long, device=self.model.device
+        )
 
         if settings.FOUNDATION_STATIC_CACHE:
-            input_ids = self.pad_to_batch_size(input_ids, batch_size=self.kv_cache.max_batch_size)
-            attention_mask = self.pad_to_batch_size(attention_mask, batch_size=self.kv_cache.max_batch_size)
-            position_ids = self.pad_to_batch_size(position_ids, batch_size=self.kv_cache.max_batch_size)
+            input_ids = self.pad_to_batch_size(
+                input_ids, batch_size=self.kv_cache.max_batch_size
+            )
+            attention_mask = self.pad_to_batch_size(
+                attention_mask, batch_size=self.kv_cache.max_batch_size
+            )
+            position_ids = self.pad_to_batch_size(
+                position_ids, batch_size=self.kv_cache.max_batch_size
+            )
+            cache_idxs_padded = self.pad_to_batch_size(
+                cache_idxs, batch_size=self.kv_cache.max_batch_size, pad_value=-1
+            )
 
-        # Find text lengths of each
-        is_special = (input_ids.unsqueeze(-1) == self.special_token_ids).any(-1)  # (batch, seq_len)
-        text_lengths = []
-        for i in range(input_ids.shape[0]):
-            special_positions = is_special[i].nonzero(as_tuple=True)[0]
-            if len(special_positions) > 0:
-                # Assuming special tokens are contiguous at the start
-                prefix_len = special_positions[-1].item() + 1
-            else:
-                prefix_len = 0
-            text_lengths.append(input_ids.shape[1] - prefix_len)
+            image_tile_pad = get_nearest_pad(
+                image_tiles.shape[0], settings.FOUNDATION_PAD_TO_NEAREST * 32
+            )
+            image_tiles = self.pad_to_batch_size(image_tiles, batch_size=image_tile_pad)
+            grid_thw = self.pad_to_batch_size(
+                grid_thw, batch_size=self.kv_cache.max_batch_size
+            )
+
+        is_special = (
+            input_ids.unsqueeze(-1).eq(self.special_token_ids).any(-1)
+        )  # (B, L) bool
+
+        idx = (
+            torch.arange(input_ids.size(1), device=input_ids.device, dtype=torch.long)
+            + 1
+        )  # 1…L
+        special_length = is_special.sum(dim=1)  # (B,) number of special tokens
+        last_special_plus1 = (is_special * idx).max(dim=1).values  # (B,) 0 if none
+
+        image_lengths = special_length.to(dtype=torch.long)  # (B,)
+        text_lengths = (input_ids.size(1) - last_special_plus1).to(
+            dtype=torch.long
+        )  # (B,)
 
         with settings.INFERENCE_MODE():
+            logger.debug(
+                f"Prefill shapes: input_ids={input_ids.shape}, image_tiles={image_tiles.shape},  grid_thw={grid_thw.shape}, attention_mask={attention_mask.shape}, position_ids={position_ids.shape}, cache_idxs_padded={cache_idxs_padded.shape}"
+            )
+
+            start = time.time()
+            image_embeddings = self.model.get_image_embeddings(
+                pixel_values=image_tiles,
+                grid_thw=grid_thw,
+                encoder_chunk_size=self.get_encoder_chunk_size(),
+                image_tile_length=image_tile_length,
+                valid_batch_size=valid_batch_size,
+            )
+            print(f"Image embedding took {time.time() - start:.2f} seconds")
+
             outputs = self.model(
                 input_ids=input_ids,
-                image_tiles=image_tiles,
-                grid_thw=grid_thw,
+                image_embeddings=image_embeddings,
                 attention_mask=attention_mask,
                 position_ids=position_ids,
                 inputs_embeds=None,
                 past_key_values=self.kv_cache,
                 use_cache=True,
                 encoder_chunk_size=self.get_encoder_chunk_size(),
-                cache_idxs=idxs_to_merge,
+                cache_idxs=cache_idxs_padded,
                 prefill=True,
-                num_valid_tokens=None,   # Not required during prefill
+                num_valid_tokens=None,  # Not required during prefill
                 text_lengths=text_lengths,
+                valid_batch_size=torch.tensor(
+                    valid_batch_size, device=self.model.device, dtype=torch.long
+                ),
             )
-        
+            # import torch_xla.core.xla_model as xm
+            # print(xm.get_metrics_report())
+
         # Process outputs
-        processed_outputs = self.process_outputs(outputs, max_lookahead_tokens=max_lookahead_tokens)
+        processed_outputs = self.process_outputs(
+            outputs, max_lookahead_tokens=max_lookahead_tokens
+        )
         # Multi-token prediction
         predicted_tokens = processed_outputs.input_ids.shape[1]
-        num_valid_tokens = torch.ones((input_ids.shape[0]), device=self.model.device, dtype=torch.long) * predicted_tokens
-        num_predicted_tokens = torch.ones((input_ids.shape[0], 1), device=self.model.device, dtype=torch.long) * predicted_tokens
+        num_valid_tokens = (
+            torch.ones((input_ids.shape[0]), device=self.model.device, dtype=torch.long)
+            * predicted_tokens
+        )
+        num_predicted_tokens = (
+            torch.ones(
+                (input_ids.shape[0], 1), device=self.model.device, dtype=torch.long
+            )
+            * predicted_tokens
+        )
 
-        self.kv_cache.prefill_attention_mask_update(attention_mask, idxs_to_merge, text_lengths[:valid_batch_size])
-        self.kv_cache.update_text_counts(idxs_to_merge, text_lengths[:valid_batch_size])
+        self.kv_cache.prefill_attention_mask_update(
+            attention_mask,
+            cache_idxs_padded,  # unpadded
+            text_lengths,
+            image_lengths,  # These can be unpadded, since we use cache_idxs later
+            torch.tensor([valid_batch_size]).to(self.model.device),
+        )
 
         if current_inputs is None:
             new_seq_len = processed_outputs.input_ids.shape[1]
             # No padding tokens - So we can safely set position_ids this way
-            position_ids = position_ids[:, -1:] + torch.arange(1, new_seq_len + 1, device=position_ids.device)
+            position_ids = position_ids[:, -1:] + torch.arange(
+                1, new_seq_len + 1, device=position_ids.device
+            )
             new_input = ContinuousBatchInput(
                 input_ids=processed_outputs.input_ids,
                 position_ids=position_ids,
@@ -430,24 +562,29 @@ class FoundationPredictor(BasePredictor):
         current_input_ids = current_inputs.input_ids
         current_position_ids = current_inputs.position_ids
 
-        assert(current_input_ids.shape[1] == current_position_ids.shape[1])
+        assert current_input_ids.shape[1] == current_position_ids.shape[1]
         input_ids, position_ids = self.pad_and_shift_input_ids_position_ids(
-            processed_outputs.input_ids, position_ids, new_seq_len=current_input_ids.shape[1]
+            processed_outputs.input_ids,
+            position_ids,
+            new_seq_len=current_input_ids.shape[1],
         )
         current_input_ids[idxs_to_merge] = input_ids[:valid_batch_size]
         current_position_ids[idxs_to_merge] = position_ids[:valid_batch_size]
 
         current_num_valid_tokens = current_inputs.num_valid_tokens
-        current_num_valid_tokens[idxs_to_merge] = num_valid_tokens[:valid_batch_size]
+        for i, idx_to_merge in enumerate(idxs_to_merge):
+            current_num_valid_tokens[idx_to_merge] = num_valid_tokens[i]
 
         current_num_predicted_tokens = current_inputs.num_predicted_tokens
-        current_num_predicted_tokens[idxs_to_merge] = num_predicted_tokens[:valid_batch_size]
+        current_num_predicted_tokens[idxs_to_merge] = num_predicted_tokens[
+            :valid_batch_size
+        ]
 
         new_input = ContinuousBatchInput(
             input_ids=current_input_ids,
             position_ids=current_position_ids,
             num_valid_tokens=current_num_valid_tokens,
-            num_predicted_tokens=current_num_predicted_tokens
+            num_predicted_tokens=current_num_predicted_tokens,
         )
 
         return new_input, processed_outputs, idxs_to_merge
@@ -456,7 +593,7 @@ class FoundationPredictor(BasePredictor):
         dummy_image = np.zeros(shape=(*self.tasks[task_name]["img_size"], 3))
         tiles, _ = self.processor._process_and_tile(dummy_image)
         num_image_tokens = tiles.shape[0] / self.processor.merge_size**2
-        
+
         # Extra 1 to account for rotation token when present.
         return 1 + self.processor.num_register_tokens + int(num_image_tokens)
 
@@ -469,7 +606,7 @@ class FoundationPredictor(BasePredictor):
         math_mode: bool = True,
         drop_repeated_tokens: bool = True,
         max_lookahead_tokens: Optional[int] = None,
-        top_k: int = 5
+        top_k: int = 5,
     ) -> tuple:
         allowed_tasks = self.tasks.keys()
         assert all([task_name in allowed_tasks for task_name in task_names]), (
@@ -481,18 +618,25 @@ class FoundationPredictor(BasePredictor):
         topk_probs = [[] for _ in range(len(images))]
 
         if batch_size is None:
-            batch_size = self.get_batch_size()
-        
-        batch_size = min(len(images), batch_size)
+            batch_size = (
+                self.get_batch_size()
+                if settings.FOUNDATION_STATIC_CACHE
+                else len(images)
+            )
+
         current_inputs = None
-        
-        max_image_tokens = max(self.get_max_image_token_count(task) for task in set(task_names))
-        self.setup_cache(batch_size, max_cache_len=max_image_tokens + self.model.config.sliding_window)
+
+        max_image_tokens = max(
+            self.get_max_image_token_count(task) for task in set(task_names)
+        )
+        self.setup_cache(
+            batch_size,
+            max_image_tokens=max_image_tokens,
+            max_text_tokens=self.model.config.sliding_window,
+        )
 
         batch_max_tokens = {}
-        for idx, (img, txt, task) in enumerate(
-            zip(images, input_texts, task_names)
-        ):
+        for idx, (img, txt, task) in enumerate(zip(images, input_texts, task_names)):
             self.prompt_queue.append(
                 FoundationPrompt(
                     id=idx, task_name=task, text=txt, image=img, math_mode=math_mode
@@ -517,11 +661,19 @@ class FoundationPredictor(BasePredictor):
             if (
                 self.num_empty_slots / batch_size
             ) > self.min_prefill_ratio and self.prompt_queue:
-                updated_inputs, outputs, merge_idxs = self.prefill(current_inputs, max_lookahead_tokens=max_lookahead_tokens)
+                start = time.time()
+                updated_inputs, outputs, merge_idxs = self.prefill(
+                    current_inputs, max_lookahead_tokens=max_lookahead_tokens
+                )
+                mark_step()
+
+                logger.debug(f"Prefill took {time.time() - start:.2f} seconds")
 
                 predicted_tokens_cpu = outputs.preds.cpu()
                 scores_cpu = outputs.scores.cpu()
                 token_probs_cpu = outputs.token_probs.cpu()
+                bbox_preds_cpu = outputs.bbox_preds.cpu()
+
                 for temp_idx, b_idx in enumerate(merge_idxs):
                     if self.batch_prompt_mapping[b_idx] is not None:
                         p_idx = self.batch_prompt_mapping[b_idx]
@@ -529,7 +681,9 @@ class FoundationPredictor(BasePredictor):
                         for t_idx in range(seq_len):
                             token = predicted_tokens_cpu[temp_idx, t_idx].item()
                             predicted_tokens[p_idx].append(token)
-                            batch_bboxes[p_idx, batch_pos[p_idx]] = outputs.bbox_preds[
+
+                            # Keep on GPU for later postprocessing
+                            batch_bboxes[p_idx, batch_pos[p_idx]] = bbox_preds_cpu[
                                 temp_idx, t_idx
                             ]
                             batch_pos[p_idx] += 1
@@ -552,10 +706,15 @@ class FoundationPredictor(BasePredictor):
                                 pbar.update(1)
                                 break
             else:
-                updated_inputs, outputs = self.decode(current_inputs, max_lookahead_tokens=max_lookahead_tokens)
+                updated_inputs, outputs = self.decode(
+                    current_inputs, max_lookahead_tokens=max_lookahead_tokens
+                )
+                mark_step()
+
                 predicted_tokens_cpu = outputs.preds.cpu()
                 scores_cpu = outputs.scores.cpu()
                 token_probs_cpu = outputs.token_probs.cpu()
+                bbox_preds_cpu = outputs.bbox_preds.cpu()
 
                 for b_idx, p_idx in self.batch_prompt_mapping.items():
                     if p_idx is not None:
@@ -565,7 +724,9 @@ class FoundationPredictor(BasePredictor):
                         for t_idx in range(seq_len):
                             token = predicted_tokens_cpu[b_idx, t_idx].item()
                             predicted_tokens[p_idx].append(token)
-                            batch_bboxes[p_idx, batch_pos[p_idx]] = outputs.bbox_preds[
+
+                            # Keep on GPU for later postprocessing
+                            batch_bboxes[p_idx, batch_pos[p_idx]] = bbox_preds_cpu[
                                 b_idx, t_idx
                             ]
                             batch_pos[p_idx] += 1
@@ -580,9 +741,11 @@ class FoundationPredictor(BasePredictor):
                             }
                             topk_probs[p_idx].append(top_k_scores)
 
-                            repeats = (
-                                len(predicted_tokens[p_idx]) >= batch_max_tokens[p_idx]
-                                or (drop_repeated_tokens and detect_repeat_token(predicted_tokens[p_idx]))
+                            repeats = len(predicted_tokens[p_idx]) >= batch_max_tokens[
+                                p_idx
+                            ] or (
+                                drop_repeated_tokens
+                                and detect_repeat_token(predicted_tokens[p_idx])
                             )
                             if (
                                 token
@@ -601,7 +764,6 @@ class FoundationPredictor(BasePredictor):
 
             # Update inputs and mark XLA step
             current_inputs = updated_inputs
-            mark_step()
         pbar.close()
 
         del self.kv_cache

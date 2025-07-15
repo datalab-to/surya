@@ -3,6 +3,7 @@ from typing import Optional
 import torch
 
 from surya.common.load import ModelLoader
+from surya.common.xla import get_compile_args
 from surya.logging import get_logger
 from surya.settings import settings
 from surya.table_rec.model.config import (
@@ -55,7 +56,7 @@ class TableRecModelLoader(ModelLoader):
             logger.info(
                 f"Compiling table recognition model {self.checkpoint} on device {device} with dtype {dtype}"
             )
-            compile_args = {"backend": "openxla"} if device == "xla" else {}
+            compile_args = get_compile_args(device)
             model.encoder = torch.compile(model.encoder, **compile_args)
             model.decoder = torch.compile(model.decoder, **compile_args)
 

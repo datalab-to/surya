@@ -2,8 +2,6 @@ from typing import Optional
 from transformers import PretrainedConfig
 
 from surya.common.s3 import S3DownloaderMixin
-from surya.common.surya.encoder.config import SuryaEncoderConfig
-from surya.common.surya.decoder.config import SuryaDecoderConfig
 
 
 class SuryaModelConfig(S3DownloaderMixin, PretrainedConfig):
@@ -39,6 +37,9 @@ class SuryaModelConfig(S3DownloaderMixin, PretrainedConfig):
         max_multi_out: int = 8,
         **kwargs,
     ):
+        from surya.common.surya.encoder.config import SuryaEncoderConfig
+        from surya.common.surya.decoder.config import SuryaDecoderConfig
+
         super().__init__(**kwargs)
         self.is_encoder_decoder = False
         self.vocab_size = vocab_size

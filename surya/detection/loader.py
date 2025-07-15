@@ -3,6 +3,7 @@ from typing import Optional
 import torch
 
 from surya.common.load import ModelLoader
+from surya.common.xla import get_compile_args
 from surya.detection.processor import SegformerImageProcessor
 
 from surya.detection.model.config import EfficientViTConfig
@@ -47,7 +48,7 @@ class DetectionModelLoader(ModelLoader):
             logger.info(
                 f"Compiling detection model {self.checkpoint} on device {device} with dtype {dtype}"
             )
-            compile_args = {"backend": "openxla"} if device == "xla" else {}
+            compile_args = get_compile_args(device)
             model = torch.compile(model, **compile_args)
 
         logger.debug(

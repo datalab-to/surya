@@ -3,7 +3,6 @@ from typing import List
 import torch
 
 from surya.common.polygon import PolygonBox
-from surya.settings import settings
 
 
 def clean_boxes(boxes: List[PolygonBox]) -> List[PolygonBox]:
@@ -84,14 +83,3 @@ def is_flash_attn_2_supported(device: str | torch.device) -> bool:
         return False
 
     return True
-
-
-if settings.TORCH_DEVICE_MODEL == "xla":
-    import torch_xla.core.xla_model as xm
-else:
-    xm = None
-
-
-def mark_step():
-    if xm is not None:
-        xm.mark_step()

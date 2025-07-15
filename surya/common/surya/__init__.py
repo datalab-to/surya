@@ -1,5 +1,4 @@
 from typing import Optional, Tuple, TypedDict
-import warnings
 from dataclasses import dataclass
 
 import torch
@@ -56,6 +55,7 @@ class FlashAttentionKwargs(TypedDict, total=False):
 
 class KwargsForCausalLM(FlashAttentionKwargs): ...
 
+
 class DistanceProjection(nn.Module):
     def __init__(self, in_features: int, out_features: int):
         super().__init__()
@@ -74,6 +74,7 @@ class DistanceProjection(nn.Module):
         nn.init.xavier_uniform_(self.fc2.weight)
         nn.init.zeros_(self.fc1.bias)
         nn.init.zeros_(self.fc2.bias)
+
 
 class SuryaModel(S3DownloaderMixin, PreTrainedModel):
     config_class = SuryaModelConfig
@@ -166,88 +167,115 @@ class SuryaModel(S3DownloaderMixin, PreTrainedModel):
         chunk_pixels: torch.Tensor,
         chunk_grid_thw: torch.Tensor,
         actual_chunk_len: int,
-        encoder_chunk_size: int
+        encoder_chunk_size: int,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        valid_embed_len = actual_chunk_len // (self.vision_encoder.spatial_merge_size ** 2)
+        valid_embed_len = actual_chunk_len // (
+            self.vision_encoder.spatial_merge_size**2
+        )
         if settings.FOUNDATION_STATIC_CACHE and actual_chunk_len < encoder_chunk_size:
             padding_len = encoder_chunk_size - actual_chunk_len
-            padding = torch.zeros(
-                padding_len, 
-                *chunk_pixels.shape[1:],
-                device=chunk_pixels.device,
-                dtype=chunk_pixels.dtype
+            chunk_pixels = F.pad(
+                chunk_pixels,
+                (0, 0, 0, padding_len),
+                mode="constant",
+                value=0.0,
             )
-            chunk_pixels = torch.cat([chunk_pixels, padding], dim=0)
-            
+
             padding_grid = torch.tensor(
                 [[1, 2, padding_len // 2]],
                 device=chunk_grid_thw.device,
-                dtype=chunk_grid_thw.dtype
+                dtype=chunk_grid_thw.dtype,
             )
             chunk_grid_thw = torch.cat([chunk_grid_thw, padding_grid], dim=0)
 
         return chunk_pixels, chunk_grid_thw, valid_embed_len
-
 
     def get_image_embeddings(
         self,
         pixel_values: torch.Tensor,
         grid_thw: torch.Tensor,
         encoder_chunk_size: int | None,
+        image_tile_length: torch.Tensor | None = None,
+        valid_batch_size: torch.Tensor | None = None,
     ):
         # embed all images with the vision encoder after they have already been tiled and flattened into a single batch
         chunks = [0]
         grid_chunks = [0]
         curr_chunk_len = 0
         curr_seq_len = 0
-        for i in range(len(grid_thw)):
-            curr_chunk_len += (grid_thw[i][0] * grid_thw[i][1] * grid_thw[i][2]).item()
-            if curr_chunk_len > encoder_chunk_size:
+        chunk_tokens = []
+        grid_chunk_size = []
+        curr_grid_len = 0
+        for i in range(len(grid_thw[:valid_batch_size])):
+            curr_sample_len = grid_thw[i][0] * grid_thw[i][1] * grid_thw[i][2]
+
+            if (
+                curr_chunk_len > (encoder_chunk_size - curr_sample_len)
+                and curr_chunk_len > 0
+            ):
+                chunk_tokens.append(curr_chunk_len)
                 chunks.append(curr_chunk_len + curr_seq_len)
                 curr_seq_len += curr_chunk_len
                 curr_chunk_len = 0
-                grid_chunks.append(i + 1)
+                grid_chunks.append(i)
+                grid_chunk_size.append(curr_grid_len)
+                curr_grid_len = 0
+
+            curr_chunk_len += curr_sample_len
+            curr_grid_len += 1
 
         if curr_chunk_len > 0:
-            chunks.append(pixel_values.shape[0])
-            grid_chunks.append(len(grid_thw))
+            chunks.append(image_tile_length)
+            grid_chunks.append(valid_batch_size)
+            chunk_tokens.append(curr_chunk_len)
+            grid_chunk_size.append(curr_grid_len)
 
-        assert curr_chunk_len + curr_seq_len == pixel_values.shape[0], (
-            f"Mismatch in encoder chunking, {curr_chunk_len} + {curr_seq_len} != {pixel_values.shape[0]}"
+        assert curr_chunk_len + curr_seq_len == image_tile_length, (
+            f"Mismatch in encoder chunking, {curr_chunk_len} + {curr_seq_len} != {image_tile_length}"
         )
 
         logger.debug(
             f"Chunking encoder sequence into {len(chunks) - 1} chunks of size {encoder_chunk_size} with lengths {chunks} and grids {grid_chunks}"
         )
-        embeddings = []
+
+        final_length = image_tile_length // 4
+        embeddings = torch.zeros(
+            final_length,
+            self.vision_encoder.config.hidden_size,
+            dtype=pixel_values.dtype,
+            device=self.device,
+        )
+        out_start = 0
+        grid_thw = grid_thw.to(self.device)
         for i in range(len(chunks) - 1):
             start = chunks[i]
             end = chunks[i + 1]
             grid_start = grid_chunks[i]
             grid_end = grid_chunks[i + 1]
-            
+
             chunk_pixels = pixel_values[start:end]
             chunk_grid_thw = grid_thw[grid_start:grid_end]
             actual_chunk_len = end - start
-            chunk_pixels, chunk_grid_thw, valid_embed_len = self.maybe_static_pad_image_inputs(chunk_pixels, chunk_grid_thw, actual_chunk_len, encoder_chunk_size)
+            chunk_pixels, chunk_grid_thw, valid_embed_len = (
+                self.maybe_static_pad_image_inputs(
+                    chunk_pixels, chunk_grid_thw, actual_chunk_len, encoder_chunk_size
+                )
+            )
+            logger.debug(
+                f"Inferencing chunk {i} with size {chunk_pixels.shape} and grid {chunk_grid_thw.shape}"
+            )
 
             chunk_embeddings = self.vision_encoder.embed_images(
-                image_batch=chunk_pixels,
-                grid_thw=chunk_grid_thw
+                image_batch=chunk_pixels.to(self.device), grid_thw=chunk_grid_thw
             )
-            embeddings.append(chunk_embeddings[:valid_embed_len])
-
-        if len(embeddings) == 0:
-            raise ValueError(
-                "No image embeddings were generated. Check the input images and grid sizes."
-            )
-        elif len(embeddings) == 1:
-            embeddings = embeddings[0]
-        else:
-            embeddings = torch.cat(embeddings, dim=0)
+            embeddings[out_start : (out_start + valid_embed_len)] = chunk_embeddings[
+                :valid_embed_len
+            ]
+            out_start += valid_embed_len
 
         encoding_2d = self.get_2d_learned_embeddings(
             grid_thw,
+            valid_batch_size=valid_batch_size,
             device=embeddings.device,
             bbox_size=self.config.image_embed_encoding_multiplier,
         )
@@ -259,11 +287,14 @@ class SuryaModel(S3DownloaderMixin, PreTrainedModel):
         )
 
         embeddings = embeddings + encoding_2d
-
         return embeddings
 
     def embed_ids_boxes_images(
-        self, input_ids, pixel_values, grid_thw, encoder_chunk_size: int
+        self,
+        input_ids,
+        image_embeddings,
+        encoder_chunk_size: int,
+        valid_batch_size: torch.Tensor | None = None,
     ):
         """
         Insert embedded image tiles into the corresponding positions into the full input sequence
@@ -272,25 +303,23 @@ class SuryaModel(S3DownloaderMixin, PreTrainedModel):
         """
         # This is batched in the inner call
         inputs_embeds = self.embedder.embed(input_tokens=input_ids)
-        if pixel_values is not None:
-            image_features = self.get_image_embeddings(
-                pixel_values=pixel_values,
-                grid_thw=grid_thw,
-                encoder_chunk_size=encoder_chunk_size,
+
+        if image_embeddings is not None:
+            image_token_id_tensor = torch.tensor(
+                self.config.image_token_id,
+                device=image_embeddings.device,
+                dtype=torch.long,
+            )
+            mask = input_ids == image_token_id_tensor
+            flat = inputs_embeds.view(-1, inputs_embeds.size(-1))  # (B·L) x D
+            flat_mask = mask.view(-1)  # (B·L)
+            flat.index_copy_(
+                0,
+                flat_mask.nonzero(as_tuple=False).squeeze(1).to(torch.long),
+                image_embeddings.to(flat.dtype),
             )
 
-            special_image_mask = (input_ids == self.config.image_token_id).unsqueeze(-1)
-            special_image_mask = special_image_mask.expand_as(inputs_embeds)
-            if inputs_embeds[special_image_mask].numel() != image_features.numel():
-                n_image_tokens = torch.sum((input_ids == self.config.image_token_id))
-                n_image_features = image_features.shape[0] * image_features.shape[1]
-                warnings.warn(
-                    f"Image features and image tokens do not match: tokens {n_image_tokens}, features {n_image_features}. This may lead to unexpected results"
-                )
-            image_features = image_features.to(inputs_embeds.dtype)
-            inputs_embeds = inputs_embeds.masked_scatter(
-                special_image_mask, image_features
-            )
+            inputs_embeds = flat.view_as(inputs_embeds)
         else:
             assert (input_ids == self.config.image_token_id).sum() == 0, (
                 "Image tokens were present in the input but no input images were provided"
@@ -301,74 +330,70 @@ class SuryaModel(S3DownloaderMixin, PreTrainedModel):
     def get_2d_learned_embeddings(
         self,
         grid_thw,
+        valid_batch_size: int,
         device: str | torch.device = "cpu",
         bbox_size: int = 256,
     ):
-        all_embeddings = []
-        for grid_t, grid_h, grid_w in grid_thw:
-            llm_grid_h, llm_grid_w = (
-                grid_h // self.config.merge_size,
-                grid_w // self.config.merge_size,
-            )
+        grid_thw = grid_thw[:valid_batch_size]  # ────── (B,3)
+        dev = grid_thw.device
+        merge = self.config.merge_size
 
-            # Scale to 0-1024
-            llm_grid_h = (
-                torch.arange(llm_grid_h, device=device)
-                / max(1, (llm_grid_h - 1))
-                * bbox_size
-            )
-            llm_grid_w = (
-                torch.arange(llm_grid_w, device=device)
-                / max(1, (llm_grid_w - 1))
-                * bbox_size
-            )
+        # per-sample grid sizes after merge
+        H = (grid_thw[:, 1] // merge).long()  # (B,)
+        W = (grid_thw[:, 2] // merge).long()  # (B,)
 
-            llm_grid_w_idx = llm_grid_w.to(torch.long)
-            llm_grid_h_idx = llm_grid_h.to(torch.long)
+        row_coords = torch.cat(
+            [
+                torch.linspace(0, bbox_size, steps=int(h), device=dev)
+                .round()
+                .repeat_interleave(w)  # repeat each row value w times
+                for h, w in zip(H.tolist(), W.tolist())
+            ]
+        )  # (full_grid_size,)
 
-            llm_grid_w = self.img_w_embed(llm_grid_w_idx)
-            llm_grid_h = self.img_h_embed(llm_grid_h_idx)
+        col_coords = torch.cat(
+            [
+                torch.linspace(0, bbox_size, steps=int(w), device=dev)
+                .round()
+                .repeat(int(h))  # tile the column vector h times
+                for h, w in zip(H.tolist(), W.tolist())
+            ]
+        )  # (full_grid_size,)
 
-            full_grid = llm_grid_h[:, None] + llm_grid_w[None, :]
-
-            flattened = full_grid.flatten(
-                0, 1
-            )  # Flatten first dimension, so they are seq_len x embed_dim
-            all_embeddings.append(flattened)
-        return torch.concat(
-            all_embeddings, dim=0
-        )  # Shape is num_image_tokens x embed_dim
+        emb = self.img_h_embed(row_coords.long()) + self.img_w_embed(col_coords.long())
+        return emb
 
     def get_logits(self, hidden_states):
-        assert hidden_states.shape[1] == 1, "Multi output predictions only applied on the last token"
+        assert hidden_states.shape[1] == 1, (
+            "Multi output predictions only applied on the last token"
+        )
 
         all_lm_logits = []
         all_bbox_logits = []
-        
+
         current_hidden = hidden_states
-        
+
         # Loop includes initial prediction (i=0) plus multi_out_distance additional predictions
         for i in range(self.config.multi_output_distance + 1):
             if i > 0:
-                current_hidden = self.multi_output_projections[i-1](current_hidden)
-            
+                current_hidden = self.multi_output_projections[i - 1](current_hidden)
+
             lm_logits = self.lm_head(current_hidden)
             bbox_logits = F.sigmoid(self.bbox_head(current_hidden))
-            
+
             all_lm_logits.append(lm_logits)
             all_bbox_logits.append(bbox_logits)
-        
+
         # Concatenate along sequence dimension (dim=1)
         final_lm_logits = torch.cat(all_lm_logits, dim=1)
         final_bbox_logits = torch.cat(all_bbox_logits, dim=1)
-        
+
         return final_lm_logits, final_bbox_logits
 
     def forward(
         self,
         input_ids=None,
-        image_tiles=None,
-        grid_thw=None,
+        image_embeddings=None,
         inputs_embeds=None,
         attention_mask=None,
         position_ids=None,
@@ -382,20 +407,21 @@ class SuryaModel(S3DownloaderMixin, PreTrainedModel):
         num_valid_tokens=None,
         prefill=False,
         text_lengths=None,
+        valid_batch_size: torch.Tensor = None,
         **kwargs: KwargsForCausalLM,
     ):
         # Process the mixed batch if provided
         if inputs_embeds is None:
             inputs_embeds = self.embed_ids_boxes_images(
-                input_ids, image_tiles, grid_thw, encoder_chunk_size
+                input_ids,
+                image_embeddings,
+                encoder_chunk_size,
+                valid_batch_size,
             )
 
         # Handling flash attention kwargs outside the decoder to speed up + avoid graph breaks inside the decoder
         # Skipped during decoding since not required
-        if (
-            self.decoder.config._attn_implementation == "flash_attention_2"
-            and prefill
-        ):
+        if self.decoder.config._attn_implementation == "flash_attention_2" and prefill:
             batch_size, query_length, _ = inputs_embeds.shape
             indices_k, cu_seqlens_k, max_seqlen_in_batch_k = _get_unpad_data(
                 attention_mask

@@ -9,10 +9,12 @@ from surya.common.surya import SuryaModel
 from surya.common.surya.processor import SuryaOCRProcessor
 from surya.common.surya.processor.tokenizer import SuryaOCRTokenizer
 from surya.common.util import is_flash_attn_2_supported
+from surya.common.xla import get_compile_args
 from surya.logging import get_logger
 from surya.settings import settings
 
 logger = get_logger()
+
 
 class FoundationModelLoader(ModelLoader):
     def __init__(self, checkpoint: Optional[str] = None):
@@ -42,6 +44,8 @@ class FoundationModelLoader(ModelLoader):
         if is_flash_attn_2_available() and is_flash_attn_2_supported(device):
             config.decoder._attn_implementation = "flash_attention_2"
             config.vision_encoder._attn_implementation = "flash_attention_2"
+        elif "xla" in str(device):
+            config.vision_encoder._attn_implementation = "flash_attention_xla"
         else:
             config.decoder._attn_implementation = "sdpa"
             config.vision_encoder._attn_implementation = "sdpa"
@@ -50,6 +54,20 @@ class FoundationModelLoader(ModelLoader):
             self.checkpoint, torch_dtype=dtype, config=config
         ).to(device)
         model = model.eval()
+
+        if settings.COMPILE_ALL or settings.COMPILE_FOUNDATION:
+            torch._dynamo.config.cache_size_limit = 1000
+            torch._dynamo.config.suppress_errors = False
+            torch._dynamo.config.specialize_int = False
+            torch._dynamo.config.recompile_limit = 32
+
+            logger.info(
+                f"Compiling foundation model {self.checkpoint} on device {device} with dtype {dtype}"
+            )
+            compile_args = get_compile_args(device)
+            model.encoder = torch.compile(model.vision_encoder, **compile_args)
+            model.decoder = torch.compile(model.decoder, **compile_args)
+            model.embedder = torch.compile(model.embedder, **compile_args)
 
         logger.debug(
             f"Loaded recognition model {self.checkpoint} from {SuryaModel.get_local_path(self.checkpoint)} onto device {model.device} with dtype {dtype}, using decoder attention mechanism {model.config.decoder._attn_implementation}, encoder attention mechanism {model.config.vision_encoder._attn_implementation}."
@@ -74,7 +92,7 @@ class FoundationModelLoader(ModelLoader):
             merge_size=config.vision_encoder.spatial_merge_size,
             model_device=device,
             num_beacon_tokens=config.num_beacon_tokens,
-            beacon_token_interval=config.beacon_token_interval
+            beacon_token_interval=config.beacon_token_interval,
         )
 
         return processor

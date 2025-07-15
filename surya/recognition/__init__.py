@@ -4,9 +4,7 @@ import re
 from typing import List
 
 import numpy as np
-import torch
 from PIL import Image
-import torch.nn.functional as F
 
 from surya.common.polygon import PolygonBox
 from surya.common.surya.processor import NOMATH_TOKEN
@@ -25,7 +23,7 @@ from surya.recognition.util import (
     clean_close_polygons,
     unwrap_math,
     clean_math_tags,
-    words_from_chars
+    words_from_chars,
 )
 from surya.foundation.util import detect_repeat_token, prediction_to_polygon_batch
 from surya.recognition.schema import TextLine, OCRResult, TextChar
@@ -36,9 +34,10 @@ from surya.logging import get_logger, configure_logging
 configure_logging()
 logger = get_logger()
 
+
 class RecognitionPredictor(BasePredictor):
     batch_size = settings.RECOGNITION_BATCH_SIZE
-    default_batch_sizes = {"cpu": 32, "mps": 64, "cuda": 256, "xla": 128}
+    default_batch_sizes = {"cpu": 32, "mps": 64, "cuda": 256, "xla": 96}
 
     # Override base init - Do not load model
     def __init__(self, foundation_predictor: FoundationPredictor):
@@ -350,7 +349,7 @@ class RecognitionPredictor(BasePredictor):
     ) -> List[OCRResult]:
         if task_names is None:
             task_names = [TaskNames.ocr_with_boxes] * len(images)
-        if recognition_batch_size is None:
+        if recognition_batch_size is not None:
             recognition_batch_size = self.get_batch_size()
 
         assert len(images) == len(task_names), (
@@ -414,8 +413,15 @@ class RecognitionPredictor(BasePredictor):
         flat["task_names"] = [flat["task_names"][i] for i in indices]
 
         # Make predictions
-        predicted_tokens, batch_bboxes, scores, _ = self.foundation_predictor.prediction_loop(
-            flat["slices"], flat["input_text"], flat["task_names"], batch_size=recognition_batch_size, math_mode=math_mode, drop_repeated_tokens=True
+        predicted_tokens, batch_bboxes, scores, _ = (
+            self.foundation_predictor.prediction_loop(
+                flat["slices"],
+                flat["input_text"],
+                flat["task_names"],
+                batch_size=recognition_batch_size,
+                math_mode=math_mode,
+                drop_repeated_tokens=True,
+            )
         )
 
         # Get text and bboxes in structured form
