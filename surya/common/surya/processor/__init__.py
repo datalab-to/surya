@@ -31,12 +31,14 @@ PAD_TOKEN = "<PAD>"
 NO_OUTPUT_TOKEN = "<NOP>"
 IMAGE_ROTATED_TOKEN = "<ROT>"
 REGISTER_TOKENS = ["<REG1>", "<REG2>", "<REG3>", "<REG4>"]
+BEACON_TOKEN = "<BEACON>"
 NOMATH_TOKEN = "<NO-MATH>"
 
 # Task specific tokens
 OCR_WITH_BOXES_BOS_TOKEN = "<OCR-WB>"
 OCR_WITHOUT_BOXES_BOS_TOKEN = "<OCR-WOB>"
 BLOCK_WITHOUT_BOXES_TOKEN = "<BLOCKS-WOB>"
+LAYOUT_BOS_TOKEN = "<LAYOUT>"
 
 
 class SuryaOCRProcessor(S3DownloaderMixin, ProcessorMixin):
@@ -54,6 +56,8 @@ class SuryaOCRProcessor(S3DownloaderMixin, ProcessorMixin):
         num_register_tokens: int,
         patch_size: int,
         merge_size: int,
+        num_beacon_tokens: int,
+        beacon_token_interval: int,
         model_device: str,
         **kwargs,
     ):
@@ -61,6 +65,8 @@ class SuryaOCRProcessor(S3DownloaderMixin, ProcessorMixin):
         self.patch_size = patch_size
         self.merge_size = merge_size
         self.num_register_tokens = num_register_tokens
+        self.num_beacon_tokens = num_beacon_tokens
+        self.beacon_token_interval = beacon_token_interval
 
         self.tokenizer_vocab_size = 0
         for attr in self.attributes:
@@ -75,6 +81,7 @@ class SuryaOCRProcessor(S3DownloaderMixin, ProcessorMixin):
         self.register_token_ids = [
             self.special_token_mapping.get(r) for r in REGISTER_TOKENS
         ]
+        self.beacon_token_id = self.special_token_mapping.get(BEACON_TOKEN)
         self.image_token_id = self.special_token_mapping.get(IMAGE_TOKEN)
         self.pad_token_id = self.special_token_mapping.get(PAD_TOKEN)
         self.eos_token_id = self.special_token_mapping.get(EOS_TOKEN)
@@ -93,6 +100,9 @@ class SuryaOCRProcessor(S3DownloaderMixin, ProcessorMixin):
             TaskNames.block_without_boxes: self.special_token_mapping.get(
                 BLOCK_WITHOUT_BOXES_TOKEN
             ),
+            TaskNames.layout: self.special_token_mapping.get(
+                LAYOUT_BOS_TOKEN
+            )
         }
 
         if self.image_token_id is None:
@@ -264,7 +274,8 @@ class SuryaOCRProcessor(S3DownloaderMixin, ProcessorMixin):
         input_ids = self.ocr_tokenizer(input_text, tasks=task)["input_ids"][0]
         input_ids = [self.offsets["ocr"] + id for id in input_ids]
 
-        if not math_mode:
+        # nomath token does not work for layout
+        if not math_mode and task != "layout":
             input_ids.insert(0, self.nomath_token)
 
         return ProcessorOutput(
@@ -328,6 +339,11 @@ class SuryaOCRProcessor(S3DownloaderMixin, ProcessorMixin):
             all_grid_thw,
         )
 
+    def _process_layout(self, mixed_input: List[dict], bos_token_id: int):
+        return self._process_ocr_with_boxes(
+            mixed_input, bos_token_id=bos_token_id, task="layout"
+        )
+
     def _process_ocr_without_boxes(
         self,
         mixed_input: List[dict],
@@ -363,6 +379,7 @@ class SuryaOCRProcessor(S3DownloaderMixin, ProcessorMixin):
         mixed_batch: List[dict],
         padding_side: Optional[str] = "left",
         device: Optional[torch.device] = None,
+        pad_to_multiple: Optional[int] = None
     ):
         all_image_tiles = []
         all_input_ids = []
@@ -382,13 +399,25 @@ class SuryaOCRProcessor(S3DownloaderMixin, ProcessorMixin):
             all_image_tiles.extend(image_tiles)
             all_grid_thw.extend(grid_thw)
 
-        # If max sequence length is None, this slicing does nothing
         batched_input_ids = pad_sequence(
             all_input_ids,
             batch_first=True,
             padding_side=padding_side,
             padding_value=self.pad_token_id,
         )
+        
+        if pad_to_multiple is not None:
+            current_len = batched_input_ids.shape[1]
+            # Calculate the next multiple of pad_to_multiple
+            padded_len = ((current_len + pad_to_multiple - 1) // pad_to_multiple) * pad_to_multiple
+            
+            if padded_len > current_len:
+                pad_len = padded_len - current_len
+                batched_input_ids = torch.nn.functional.pad(
+                    batched_input_ids,
+                    (pad_len, 0),
+                    value=self.pad_token_id
+                )
 
         attention_mask = batched_input_ids.ne(self.pad_token_id)
 

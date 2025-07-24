@@ -4,6 +4,7 @@ import copy
 import json
 from collections import defaultdict
 
+from surya.foundation import FoundationPredictor
 from surya.layout import LayoutPredictor
 from surya.debug.draw import draw_polys_on_image
 from surya.logging import configure_logging, get_logger
@@ -19,7 +20,8 @@ logger = get_logger()
 def detect_layout_cli(input_path: str, **kwargs):
     loader = CLILoader(input_path, kwargs)
 
-    layout_predictor = LayoutPredictor()
+    foundation_predictor = FoundationPredictor()
+    layout_predictor = LayoutPredictor(foundation_predictor)
 
     start = time.time()
     layout_predictions = layout_predictor(loader.images)

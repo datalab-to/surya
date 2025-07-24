@@ -8,6 +8,7 @@ from surya.common.surya.schema import TaskNames
 from surya.detection import DetectionPredictor
 from surya.debug.text import draw_text_on_image
 from surya.logging import configure_logging, get_logger
+from surya.foundation import FoundationPredictor
 from surya.recognition import RecognitionPredictor
 from surya.scripts.config import CLILoader
 
@@ -25,8 +26,9 @@ def ocr_text_cli(input_path: str, task_name: str, disable_math: bool, **kwargs):
     loader = CLILoader(input_path, kwargs, highres=True)
     task_names = [task_name] * len(loader.images)
 
+    foundation_predictor = FoundationPredictor()
     det_predictor = DetectionPredictor()
-    rec_predictor = RecognitionPredictor()
+    rec_predictor = RecognitionPredictor(foundation_predictor)
 
     start = time.time()
     predictions_by_image = rec_predictor(

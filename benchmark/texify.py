@@ -11,6 +11,7 @@ from bs4 import BeautifulSoup
 
 from surya.common.surya.schema import TaskNames
 from surya.settings import settings
+from surya.foundation import FoundationPredictor
 from surya.recognition import RecognitionPredictor, OCRResult
 import json
 from rapidfuzz.distance import Levenshtein
@@ -77,7 +78,8 @@ def inference_texify(
     "--line_mode", is_flag=True, help="Use line mode for texify.", default=False
 )
 def main(ds_name: str, results_dir: str, max_rows: int, line_mode: bool):
-    predictor = RecognitionPredictor()
+    foundation_predictor = FoundationPredictor()
+    predictor = RecognitionPredictor(foundation_predictor)
     ds = datasets.load_dataset(ds_name, split="train")
 
     if max_rows:

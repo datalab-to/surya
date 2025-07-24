@@ -1,3 +1,4 @@
+from typing import Optional
 from transformers import PretrainedConfig
 
 from surya.common.s3 import S3DownloaderMixin
@@ -18,6 +19,9 @@ class SuryaModelConfig(S3DownloaderMixin, PretrainedConfig):
         eos_token_id=1,
         pad_token_id=2,
         image_token_id=3,
+        register_token_ids=(4, 5, 6, 7),
+        eoi_token_id=8,
+        beacon_token_id=9,
         special_token_count=4,
         max_sequence_length=1536,
         special_ocr_tokens=None,
@@ -25,11 +29,14 @@ class SuryaModelConfig(S3DownloaderMixin, PretrainedConfig):
         decoder=None,
         tasks: dict | None = None,
         bbox_embed_size: int = 64,
-        register_token_ids=(4, 5, 6, 7),
-        unmask_image: bool = False,
         num_register_tokens: int = 4,
         image_embed_encoding_size: int = 1024,
         image_embed_encoding_multiplier: int = 256,
+        num_beacon_tokens: int = 1,
+        beacon_token_interval: int = 4096,
+        sliding_window: Optional[int] = None,
+        multi_output_distance: int = 4,
+        max_multi_out: int = 8,
         **kwargs,
     ):
         super().__init__(**kwargs)
@@ -41,17 +48,26 @@ class SuryaModelConfig(S3DownloaderMixin, PretrainedConfig):
         self.bos_token_id = bos_token_id
         self.eos_token_id = eos_token_id
         self.pad_token_id = pad_token_id
+        self.eoi_token_id = eoi_token_id
+        self.beacon_token_id = beacon_token_id
         self.special_ocr_tokens = special_ocr_tokens
         self.special_token_count = special_token_count  # pad, bos, etc, tokens
         self.max_sequence_length = max_sequence_length
         self.tasks = tasks
         self.tie_word_embeddings = True
         self.bbox_embed_size = bbox_embed_size
-        self.unmask_image = unmask_image
         self.num_register_tokens = num_register_tokens
         self.register_token_ids = register_token_ids
         self.image_embed_encoding_size = image_embed_encoding_size
         self.image_embed_encoding_multiplier = image_embed_encoding_multiplier
+        self.num_beacon_tokens = num_beacon_tokens
+        self.beacon_token_interval = beacon_token_interval
+        self.sliding_window = sliding_window
+        self.multi_output_distance = multi_output_distance
+        self.max_multi_out = max_multi_out
+
+        if self.sliding_window is None:
+            self.sliding_window = self.max_sequence_length
 
         if isinstance(vision_encoder, dict):
             vision_encoder = SuryaEncoderConfig(**vision_encoder)
