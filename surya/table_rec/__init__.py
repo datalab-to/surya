@@ -217,6 +217,20 @@ class TableRecPredictor(BasePredictor):
                         })
 
             # Re-inference to predict cells
+            if not row_encoder_hidden_states:
+                # Return empty results if no rows were detected in any image in the batch.
+                for orig_size in orig_sizes:
+                    output_order.append(
+                        TableResult(
+                            cells=[],
+                            unmerged_cells=[],
+                            rows=[],
+                            cols=[],
+                            image_bbox=[0, 0, orig_size[0], orig_size[1]],
+                        )
+                    )
+                continue # Move to next batch
+
             row_encoder_hidden_states = torch.stack(row_encoder_hidden_states)
             row_inputs = self.processor(images=None, query_items=row_query_items, columns=columns, convert_images=False)
             row_input_ids = row_inputs["input_ids"]
