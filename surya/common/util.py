@@ -8,6 +8,23 @@ import torch.nn.functional as F
 from surya.common.polygon import PolygonBox
 
 
+def safe_max_item(tensor: torch.Tensor) -> int:
+    """Compute tensor.max().item() safely across all backends.
+
+    On MPS (Apple Silicon), the `.max()` kernel can produce incorrect
+    out-of-bounds indices for certain tensor shapes, causing
+    ``torch.AcceleratorError``.  Moving the (small) tensor to CPU before
+    reduction avoids the buggy kernel with negligible overhead.
+
+    On CUDA and CPU the tensor is used as-is.
+
+    See: https://github.com/datalab-to/surya/issues/490
+    """
+    if tensor.device.type == "mps":
+        return tensor.cpu().max().item()
+    return tensor.max().item()
+
+
 def clean_boxes(boxes: List[PolygonBox]) -> List[PolygonBox]:
     new_boxes = []
     for box_obj in boxes:

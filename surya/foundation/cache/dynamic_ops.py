@@ -259,8 +259,9 @@ class DynamicOpsCache:
             non_full_current_lens = current_lens[non_full_mask]
             non_full_valid_tokens = num_valid_tokens[non_full_mask]
 
+            from surya.common.util import safe_max_item
             max_valid_tokens = (
-                non_full_valid_tokens.max().item()
+                safe_max_item(non_full_valid_tokens)
                 if len(non_full_valid_tokens) > 0
                 else 0
             )
@@ -353,7 +354,8 @@ class DynamicOpsCache:
             text_token_counts + cache_text_start,
         )
 
-        max_tokens = num_valid_tokens.max().item()
+        from surya.common.util import safe_max_item
+        max_tokens = safe_max_item(num_valid_tokens)
         offsets = torch.arange(max_tokens, device=device).unsqueeze(0)  # [1, max_T]
         valid_mask = offsets < num_valid_tokens.unsqueeze(1)  # [B, max_T]
         src_indices = (seq_len - num_valid_tokens).unsqueeze(1) + offsets  # [B, max_T]

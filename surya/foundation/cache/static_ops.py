@@ -128,7 +128,8 @@ class StaticOpsCache(DynamicOpsCache):
     def decode_attention_mask_update(
         self, num_valid_tokens: torch.Tensor, cache_idxs: List[int]
     ):
-        max_valid_tokens = num_valid_tokens.max().item()
+        from surya.common.util import safe_max_item
+        max_valid_tokens = safe_max_item(num_valid_tokens)
         if max_valid_tokens == 0:
             # If no valid tokens, we don't need to update the attention mask
             return

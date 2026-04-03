@@ -15,7 +15,7 @@ from surya.common.surya.config import SuryaModelConfig
 from surya.common.surya.decoder import SuryaDecoderModel
 from surya.common.surya.embedder import SimpleTokenEmbedder
 from surya.common.surya.encoder import SuryaEncoderModel
-from surya.common.util import pad_to_batch_size, pad_to_batch_size_repeat
+from surya.common.util import pad_to_batch_size, pad_to_batch_size_repeat, safe_max_item
 from surya.common.xla import get_nearest_pad
 from surya.settings import settings
 
@@ -639,8 +639,8 @@ class SuryaXLAModel(SuryaModel):
         max_batch_size: int | None = None,
     ):
         # embed all images with the vision encoder after they have already been tiled and flattened into a single batch
-        unpadded_max_grid_size = (
-            (grid_thw[:, 0] * grid_thw[:, 1] * grid_thw[:, 2]).max().item()
+        unpadded_max_grid_size = safe_max_item(
+            grid_thw[:, 0] * grid_thw[:, 1] * grid_thw[:, 2]
         )
         max_grid_size = get_nearest_pad(
             unpadded_max_grid_size,

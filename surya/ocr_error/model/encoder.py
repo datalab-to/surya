@@ -26,9 +26,10 @@ from surya.ocr_error.model.config import DistilBertConfig
 
 
 def _get_unpad_data(attention_mask):
+    from surya.common.util import safe_max_item
     seqlens_in_batch = attention_mask.sum(dim=-1, dtype=torch.int32)
     indices = torch.nonzero(attention_mask.flatten(), as_tuple=False).flatten()
-    max_seqlen_in_batch = seqlens_in_batch.max().item()
+    max_seqlen_in_batch = safe_max_item(seqlens_in_batch)
     cu_seqlens = F.pad(torch.cumsum(seqlens_in_batch, dim=0, dtype=torch.int32), (1, 0))
     return (
         indices,

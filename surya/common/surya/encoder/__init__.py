@@ -8,6 +8,7 @@ from transformers.activations import ACT2FN
 
 from surya.common.pretrained import SuryaPreTrainedModel
 from surya.common.surya.encoder.config import SuryaEncoderConfig
+from surya.common.util import safe_max_item
 from surya.common.xla import get_nearest_pad
 from surya.logging import get_logger
 from surya.settings import settings
@@ -307,7 +308,7 @@ class Qwen2_5_VLVisionFlashAttention2(nn.Module):
         v = v.squeeze(0)
         cu_seqlens = cu_seqlens.squeeze(0)
 
-        max_seqlen = (cu_seqlens[1:] - cu_seqlens[:-1]).max().item()
+        max_seqlen = safe_max_item(cu_seqlens[1:] - cu_seqlens[:-1])
         attn_output = flash_attn_varlen_func(
             q, k, v, cu_seqlens, cu_seqlens, max_seqlen, max_seqlen
         ).reshape(bsz, seq_length, -1)
@@ -435,7 +436,7 @@ class Qwen2_5_VLVisionSdpaAttention(nn.Module):
         head_dim = q.shape[2]
 
         seq_lengths = cu_seqlens[1:] - cu_seqlens[:-1]  # Keep as tensor
-        max_seq_len = seq_lengths.max().item()  # Use .max() on tensor
+        max_seq_len = safe_max_item(seq_lengths)
 
         if settings.FOUNDATION_STATIC_CACHE:
             # Pad max_seq_len to the nearest multiple for compilation
