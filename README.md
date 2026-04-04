@@ -66,6 +66,11 @@ Our model weights use a modified AI Pubs Open Rail-M license (free for research,
 
 You'll need python 3.10+ and PyTorch. You may need to install the CPU version of torch first if you're not using a Mac or a GPU machine.  See [here](https://pytorch.org/get-started/locally/) for more details.
 
+Dependencies:
+```
+sudo dnf install -y libjpeg-turbo-devel
+```
+
 Install with:
 
 ```shell
