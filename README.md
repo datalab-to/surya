@@ -74,6 +74,7 @@ sudo dnf install -y libjpeg-turbo-devel
 Install with:
 
 ```shell
+pip install transformers
 pip install surya-ocr
 ```
 
