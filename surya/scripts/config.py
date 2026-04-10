@@ -1,4 +1,5 @@
 from typing import List
+from pathlib import Path
 
 import click
 import os
@@ -21,11 +22,31 @@ class CLILoader:
 
     @staticmethod
     def common_options(fn):
-        fn = click.argument("input_path", type=click.Path(exists=True), required=True)(fn)
-        fn = click.option("--output_dir", type=click.Path(exists=False), required=False, default=os.path.join(settings.RESULT_DIR, "surya"), help="Directory to save output.")(fn)
-        fn = click.option("--page_range", type=str, default=None, help="Page range to convert, specify comma separated page numbers or ranges.  Example: 0,5-10,20")(fn)
-        fn = click.option("--images", is_flag=True, help="Save images of detected bboxes.", default=False)(fn)
-        fn = click.option('--debug', '-d', is_flag=True, help='Enable debug mode.', default=False)(fn)
+        fn = click.argument("input_path", type=click.Path(exists=True), required=True)(
+            fn
+        )
+        fn = click.option(
+            "--output_dir",
+            type=click.Path(exists=False),
+            required=False,
+            default=os.path.join(settings.RESULT_DIR, "surya"),
+            help="Directory to save output.",
+        )(fn)
+        fn = click.option(
+            "--page_range",
+            type=str,
+            default=None,
+            help="Page range to convert, specify comma separated page numbers or ranges.  Example: 0,5-10,20",
+        )(fn)
+        fn = click.option(
+            "--images",
+            is_flag=True,
+            help="Save images of detected bboxes.",
+            default=False,
+        )(fn)
+        fn = click.option(
+            "--debug", "-d", is_flag=True, help="Enable debug mode.", default=False
+        )(fn)
         return fn
 
     def load(self, highres: bool = False):
@@ -34,13 +55,16 @@ class CLILoader:
             images, names = load_from_folder(self.filepath, self.page_range)
             folder_name = os.path.basename(self.filepath)
             if highres:
-                highres_images, _ = load_from_folder(self.filepath, self.page_range, settings.IMAGE_DPI_HIGHRES)
+                highres_images, _ = load_from_folder(
+                    self.filepath, self.page_range, settings.IMAGE_DPI_HIGHRES
+                )
         else:
             images, names = load_from_file(self.filepath, self.page_range)
-            folder_name = os.path.basename(self.filepath).split(".")[0]
+            folder_name = Path(self.filepath).stem
             if highres:
-                highres_images, _ = load_from_file(self.filepath, self.page_range, settings.IMAGE_DPI_HIGHRES)
-
+                highres_images, _ = load_from_file(
+                    self.filepath, self.page_range, settings.IMAGE_DPI_HIGHRES
+                )
 
         self.images = images
         self.highres_images = highres_images
@@ -59,5 +83,7 @@ class CLILoader:
                 page_lst += list(range(int(start), int(end) + 1))
             else:
                 page_lst.append(int(i))
-        page_lst = sorted(list(set(page_lst)))  # Deduplicate page numbers and sort in order
+        page_lst = sorted(
+            list(set(page_lst))
+        )  # Deduplicate page numbers and sort in order
         return page_lst

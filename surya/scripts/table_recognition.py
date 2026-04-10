@@ -28,7 +28,9 @@ logger = get_logger()
 def table_recognition_cli(input_path: str, skip_table_detection: bool, **kwargs):
     loader = CLILoader(input_path, kwargs, highres=True)
 
-    foundation_predictor = FoundationPredictor(checkpoint=settings.LAYOUT_MODEL_CHECKPOINT)
+    foundation_predictor = FoundationPredictor(
+        checkpoint=settings.LAYOUT_MODEL_CHECKPOINT
+    )
     layout_predictor = LayoutPredictor(foundation_predictor)
     table_rec_predictor = TableRecPredictor()
 
@@ -114,7 +116,8 @@ def table_recognition_cli(input_path: str, skip_table_detection: bool, **kwargs)
             )
             rc_image.save(
                 os.path.join(
-                    loader.result_path, f"{name}_page{pnum + 1}_table{table_idx}_rc.png"
+                    loader.result_path,
+                    f"{orig_name}_page{pnum + 1}_table{table_idx}_rc.png",
                 )
             )
 
@@ -123,7 +126,7 @@ def table_recognition_cli(input_path: str, skip_table_detection: bool, **kwargs)
             cell_image.save(
                 os.path.join(
                     loader.result_path,
-                    f"{name}_page{pnum + 1}_table{table_idx}_cells.png",
+                    f"{orig_name}_page{pnum + 1}_table{table_idx}_cells.png",
                 )
             )
 
