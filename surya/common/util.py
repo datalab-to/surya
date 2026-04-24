@@ -220,6 +220,17 @@ def get_top_scripts(text: str, max_scripts: int = 5):
 
     return top_scripts[:max_scripts]
 
+def device_matches(device: str | torch.device | None, name: str) -> bool:
+    # Accept both string ("cuda", "cuda:0") and torch.device forms so indexed
+    # assignments like "cuda:1" or torch.device("cuda", 1) still match "cuda".
+    if device is None:
+        return False
+    if isinstance(device, torch.device):
+        return device.type == name
+    device_str = str(device)
+    return device_str == name or device_str.startswith(name + ":")
+
+
 def is_flash_attn_2_supported(device: str | torch.device) -> bool:
     if not torch.cuda.is_available():
         return False

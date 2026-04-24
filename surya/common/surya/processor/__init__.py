@@ -13,6 +13,7 @@ from transformers.processing_utils import ProcessorMixin
 from transformers.tokenization_utils import PreTrainedTokenizer
 
 from surya.common.s3 import S3DownloaderMixin
+from surya.common.util import device_matches
 from surya.common.surya.processor.schema import (
     TextInput,
     ImageInput,
@@ -454,7 +455,7 @@ class SuryaOCRProcessor(S3DownloaderMixin, ProcessorMixin):
         batched_grid_thw = torch.from_numpy(np.array(all_grid_thw))
 
         # Pin memory for CUDA
-        if device == torch.device("cuda"):
+        if device_matches(device, "cuda"):
             batched_image_tiles = batched_image_tiles.pin_memory()
             batched_grid_thw = batched_grid_thw.pin_memory()
             attention_mask = attention_mask.pin_memory()

@@ -8,7 +8,7 @@ from surya.common.surya.config import SuryaModelConfig
 from surya.common.surya import SuryaModel, SuryaXLAModel
 from surya.common.surya.processor import SuryaOCRProcessor
 from surya.common.surya.processor.tokenizer import SuryaOCRTokenizer
-from surya.common.util import is_flash_attn_2_supported
+from surya.common.util import device_matches, is_flash_attn_2_supported
 from surya.common.xla import get_compile_args
 from surya.logging import get_logger
 from surya.settings import settings
@@ -35,7 +35,7 @@ class FoundationModelLoader(ModelLoader):
             # See https://github.com/pytorch/pytorch/issues/118122 - T4 (device version 7.5) will return true since it supports
             # emulated bf16, but falls back to very slow kernels, especially for SDPA
             dtype = settings.MODEL_DTYPE_BFLOAT
-            if device == "cuda" and not torch.cuda.is_bf16_supported(
+            if device_matches(device, "cuda") and not torch.cuda.is_bf16_supported(
                 including_emulation=False
             ):
                 # If the device is cuda, we check if bf16 is supported, and if not, we use float16
