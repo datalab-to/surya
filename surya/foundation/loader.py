@@ -2,6 +2,7 @@ from typing import Optional
 
 import torch
 from transformers.utils import is_flash_attn_2_available
+# from transformers import BitsAndBytesConfig
 
 from surya.common.load import ModelLoader
 from surya.common.surya.config import SuryaModelConfig
@@ -65,6 +66,21 @@ class FoundationModelLoader(ModelLoader):
         config._attn_implementation_autoset = True
         config.vision_encoder._attn_implementation_autoset = True
         config.decoder._attn_implementation_autoset = True
+
+        # no. 8-bit / 4-bit quantization is not compatible with Surya's pipeline
+        # # kwarg for model_cls.from_pretrained
+        # quantization_config = None
+        # if 1:
+        #     # reduce precision and memory usage
+        #     quantization_config = BitsAndBytesConfig(
+        #         load_in_8bit=True,
+        #     )
+        # if 0:
+        #     # reduce precision and memory usage even more
+        #     quantization_config = BitsAndBytesConfig(
+        #         load_in_4bit=True,
+        #         bnb_4bit_compute_dtype=torch.float16
+        #     )
 
         model = model_cls.from_pretrained(
             self.checkpoint, dtype=dtype, config=config, ignore_mismatched_sizes=True
