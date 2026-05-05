@@ -166,11 +166,8 @@ class SuryaModel(S3DownloaderMixin, SuryaPreTrainedModel):
             )
 
     def tie_weights(self, *, missing_keys=None, recompute_mapping=True):
-        self._tie_weights()
-
-    def _tie_weights(self):
-        # Tie weights of lm head and token embedder
-        self._tie_or_clone_weights(self.lm_head, self.embedder.token_embed)
+        # this is handled by all_tied_weights_keys
+        pass
 
     def get_output_embeddings(self) -> nn.Module:
         return self.lm_head
