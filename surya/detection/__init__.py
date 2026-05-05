@@ -22,7 +22,14 @@ from surya.detection.heatmap import parallel_get_boxes
 class DetectionPredictor(BasePredictor):
     model_loader_cls = DetectionModelLoader
     batch_size = settings.DETECTOR_BATCH_SIZE
-    default_batch_sizes = {"cpu": 8, "mps": 8, "cuda": 36, "xla": 18}
+    # default_batch_sizes = {"cpu": 8, "mps": 8, "cuda": 36, "xla": 18}
+    # FIXME expose CLI parameter
+    # FIXME guess cuda batch_size from VRAM size
+    # also consider thumbnail size (1200x1200?)
+    # 20 -> torch.OutOfMemoryError: CUDA out of memory.
+    # 13 -> RuntimeError: Tensor on device meta is not on the expected device cpu!
+    # 12 -> ok
+    default_batch_sizes = {"cpu": 8, "mps": 8, "cuda": 12, "xla": 18}
 
     def __call__(
         self, images: List[Image.Image], batch_size=None, include_maps=False
