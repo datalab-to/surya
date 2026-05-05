@@ -105,6 +105,11 @@ class SuryaModel(S3DownloaderMixin, SuryaPreTrainedModel):
     _supports_attention_backend = True
     main_input_name = "input_ids"
     _tied_weights_keys = ["lm_head.weight"]
+    # fix: AttributeError: 'SuryaModel' object has no attribute 'all_tied_weights_keys'
+    all_tied_weights_keys = {
+        "lm_head.weight": "model.embed_tokens.weight",
+        # "lm_head.weight": "embed_tokens.weight",
+    }
 
     def __init__(
         self,

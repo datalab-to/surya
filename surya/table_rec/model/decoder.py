@@ -75,6 +75,7 @@ class LabelEmbedding(nn.Module):
 
 class SuryaTableRecDecoder(SuryaADETRDecoderPreTrainedModel):
     _tied_weights_keys = None
+    all_tied_weights_keys = {}
 
     def __init__(self, config, **kwargs):
         super().__init__(config)
