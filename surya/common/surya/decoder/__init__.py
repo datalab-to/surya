@@ -337,13 +337,21 @@ class Qwen2RotaryEmbedding(nn.Module):
             self.rope_type = config.rope_scaling.get(
                 "rope_type", config.rope_scaling.get("type")
             )
+            # fix: KeyError: 'default'
+            # FIXME why config.rope_scaling["rope_type"] == "default"
+            # blame rope_config_validation?
+            if self.rope_type == "default":
+                self.rope_type = "linear"
         else:
-            self.rope_type = "default"
+            self.rope_type = "linear"
         self.max_seq_len_cached = config.max_position_embeddings
         self.original_max_seq_len = config.max_position_embeddings
 
         self.config = config
         self.rope_init_fn = ROPE_INIT_FUNCTIONS[self.rope_type]
+
+        # if self.config.rope_parameters["rope_type"] == "default":
+        #     self.config.rope_parameters["rope_type"] = "linear"
 
         inv_freq, self.attention_scaling = self.rope_init_fn(self.config, device)
         self.register_buffer("inv_freq", inv_freq, persistent=False)
