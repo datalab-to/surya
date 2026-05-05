@@ -353,6 +353,10 @@ class Qwen2RotaryEmbedding(nn.Module):
         # if self.config.rope_parameters["rope_type"] == "default":
         #     self.config.rope_parameters["rope_type"] = "linear"
 
+        # fix: KeyError: 'factor'
+        if not "factor" in self.config.rope_parameters:
+            self.config.rope_parameters["factor"] = 1.0
+
         inv_freq, self.attention_scaling = self.rope_init_fn(self.config, device)
         self.register_buffer("inv_freq", inv_freq, persistent=False)
         self.original_inv_freq = self.inv_freq
