@@ -84,7 +84,7 @@ class FoundationModelLoader(ModelLoader):
 
         model = model_cls.from_pretrained(
             self.checkpoint, dtype=dtype, config=config, ignore_mismatched_sizes=True
-        ).to(device)
+        )
         model = model.eval()
 
         if settings.COMPILE_ALL or settings.COMPILE_FOUNDATION:
