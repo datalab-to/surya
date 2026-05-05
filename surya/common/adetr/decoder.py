@@ -611,7 +611,7 @@ class SuryaADETRDecoderPreTrainedModel(SuryaPreTrainedModel):
     def _tie_weights(self):
         pass
 
-    def tie_weights(self):
+    def tie_weights(self, *, missing_keys=None, recompute_mapping=True):
         pass
 
 
