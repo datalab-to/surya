@@ -77,14 +77,36 @@ class Qwen2_5_VisionPatchEmbed(nn.Module):
 class Qwen2_5_VisionRotaryEmbedding(nn.Module):
     def __init__(self, dim: int, theta: float = 10000.0) -> None:
         super().__init__()
-        self.inv_freq = 1.0 / (
-            theta ** (torch.arange(0, dim, 2, dtype=torch.float) / dim)
+        self.dim = dim
+        self.theta = theta
+
+    def _init_inv_freq(self, device):
+        inv_freq = 1.0 / (
+            self.theta ** (
+                torch.arange(0, self.dim, 2, device=device, dtype=torch.float32)
+                / self.dim
+            )
         )
+        # self.register_buffer("inv_freq", inv_freq, persistent=False)
+        # this tensor is: small, not trained, not saved, recomputable
+        # avoid PyTorch bookkeeping
+        self.inv_freq = inv_freq
 
     def forward(self, seqlen: int) -> torch.Tensor:
-        seq = torch.arange(seqlen, device="cpu", dtype=self.inv_freq.dtype)
-        freqs = torch.outer(seq, self.inv_freq)
-        return freqs
+        # fix: RuntimeError: Tensor on device meta is not on the expected device cpu!
+        # meta-safe lazy init
+        if not hasattr(self, "inv_freq") or self.inv_freq.device.type == "meta":
+            # pick a real device (CPU is fine here)
+            device = torch.device("cpu")
+            self._init_inv_freq(device)
+
+        seq = torch.arange(
+            seqlen,
+            device=self.inv_freq.device,
+            dtype=self.inv_freq.dtype
+        )
+
+        return torch.outer(seq, self.inv_freq)
 
 
 class Qwen2RMSNorm(nn.Module):
