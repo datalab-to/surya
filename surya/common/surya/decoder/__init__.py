@@ -337,13 +337,29 @@ class Qwen2RotaryEmbedding(nn.Module):
             self.rope_type = config.rope_scaling.get(
                 "rope_type", config.rope_scaling.get("type")
             )
+            # TODO move up?
+            # fix: KeyError: 'default'
+            # FIXME why config.rope_scaling["rope_type"] == "default"
+            # blame rope_config_validation?
+            if self.rope_type == "default":
+                self.rope_type = "linear"
         else:
-            self.rope_type = "default"
+            self.rope_type = "linear"
         self.max_seq_len_cached = config.max_position_embeddings
         self.original_max_seq_len = config.max_position_embeddings
 
         self.config = config
+
+    def _init_rope(self, device):
         self.rope_init_fn = ROPE_INIT_FUNCTIONS[self.rope_type]
+
+        # if self.config.rope_parameters["rope_type"] == "default":
+        #     self.config.rope_parameters["rope_type"] = "linear"
+
+        # TODO move up?
+        # fix: KeyError: 'factor'
+        if not "factor" in self.config.rope_parameters:
+            self.config.rope_parameters["factor"] = 1.0
 
         inv_freq, self.attention_scaling = self.rope_init_fn(self.config, device)
         self.register_buffer("inv_freq", inv_freq, persistent=False)
@@ -374,9 +390,19 @@ class Qwen2RotaryEmbedding(nn.Module):
             self.original_inv_freq = self.original_inv_freq.to(device)
             self.register_buffer("inv_freq", self.original_inv_freq, persistent=False)
             self.max_seq_len_cached = self.original_max_seq_len
+            print("surya/common/surya/decoder/__init__.py 390 self.register_buffer inv_freq")
 
     @torch.no_grad()
     def forward(self, x, position_ids):
+        # lazy init
+        # fix: RuntimeError: Tensor on device meta is not on the expected device cpu!
+        if (
+            not hasattr(self, "inv_freq")
+            or self.inv_freq is None
+            or self.inv_freq.device.type == "meta"
+        ):
+            self._init_rope(device=x.device)
+
         if "dynamic" in self.rope_type:
             self._dynamic_frequency_update(position_ids, device=x.device)
 

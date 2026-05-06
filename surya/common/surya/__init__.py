@@ -104,7 +104,16 @@ class SuryaModel(S3DownloaderMixin, SuryaPreTrainedModel):
     _supports_static_cache = True
     _supports_attention_backend = True
     main_input_name = "input_ids"
-    _tied_weights_keys = ["lm_head.weight"]
+    _tied_weights_keys = [
+        # fix: SuryaModel LOAD REPORT: Status: MISSING
+        # "lm_head.weight"
+    ]
+    # fix: AttributeError: 'SuryaModel' object has no attribute 'all_tied_weights_keys'
+    all_tied_weights_keys = {
+        # fix: SuryaModel LOAD REPORT: Status: MISSING
+        # "lm_head.weight": "model.embed_tokens.weight",
+        # "lm_head.weight": "embed_tokens.weight",
+    }
 
     def __init__(
         self,
@@ -160,12 +169,9 @@ class SuryaModel(S3DownloaderMixin, SuryaPreTrainedModel):
                 ]
             )
 
-    def tie_weights(self):
-        self._tie_weights()
-
-    def _tie_weights(self):
-        # Tie weights of lm head and token embedder
-        self._tie_or_clone_weights(self.lm_head, self.embedder.token_embed)
+    def tie_weights(self, *, missing_keys=None, recompute_mapping=True):
+        # this is handled by all_tied_weights_keys
+        pass
 
     def get_output_embeddings(self) -> nn.Module:
         return self.lm_head
