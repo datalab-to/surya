@@ -35,10 +35,13 @@ class TableRecModelLoader(ModelLoader):
             dtype = settings.MODEL_DTYPE
 
         if device == "mps":
-            logger.warning(
+            # editted by irregular6612 26.01.25.
+            # 0.17.0 version에서는 transformsers에서 지원하지 않았지만, update되엇다고 가정하고 go.
+            """logger.warning(
                 "`TableRecEncoderDecoderModel` is not compatible with mps backend. Defaulting to cpu instead"
-            )
-            device = "cpu"
+            )"""
+            #device = "cpu"
+            device = "mps"
             dtype = "float32"
 
         config = SuryaTableRecConfig.from_pretrained(self.checkpoint)

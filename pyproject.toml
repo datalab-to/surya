@@ -1,44 +1,51 @@
-[tool.poetry]
+[project]
 name = "surya-ocr"
 version = "0.17.1"
 description = "OCR, layout, reading order, and table recognition in 90+ languages"
-authors = ["Vik Paruchuri <vik.paruchuri@gmail.com>"]
+authors = [
+    {name = "Vik Paruchuri", email = "vik.paruchuri@gmail.com"}
+]
 readme = "README.md"
 license = "GPL-3.0-or-later"
-repository = "https://github.com/VikParuchuri/surya"
 keywords = ["ocr", "pdf", "text detection", "text recognition", "tables"]
-packages = [
-    {include = "surya"}
+requires-python = ">=3.10"
+
+dependencies = [
+    "transformers>=4.56.1",
+    "torch>=2.10.0,<3.0.0",
+    "pydantic>=2.5.3,<3.0.0",
+    "pydantic-settings>=2.1.0,<3.0.0",
+    "python-dotenv>=1.0.0,<2.0.0",
+    "pillow>=10.2.0,<11.0.0",
+    "pypdfium2==4.30.0",
+    "filetype>=1.2.0,<2.0.0",
+    "click>=8.1.8,<9.0.0",
+    "platformdirs>=4.3.6,<5.0.0",
+    "opencv-python-headless==4.11.0.86",
+    "einops>=0.8.1,<1.0.0",
+    "pre-commit>=4.2.0,<5.0.0",
+    "ipykernel>=7.1.0",
 ]
 
-[tool.poetry.dependencies]
-python = "^3.10"
-transformers = ">=4.56.1"
-torch = "^2.7.0"
-pydantic = "^2.5.3"
-pydantic-settings = "^2.1.0"
-python-dotenv = "^1.0.0"
-pillow = "^10.2.0"
-pypdfium2 = "=4.30.0"
-filetype = "^1.2.0"
-click = "^8.1.8"
-platformdirs = "^4.3.6"
-opencv-python-headless = "==4.11.0.86"
-einops = "^0.8.1"
-pre-commit = "^4.2.0"
+[project.optional-dependencies]
+xla = [
+    "torch-xla[tpu]>=2.4.1,<3.0.0",
+]
 
-[tool.poetry.group.dev.dependencies]
-jupyter = "^1.0.0"
-pytesseract = "^0.3.10"
-pymupdf = "^1.23.8"
-datasets = "^2.16.1"
-rapidfuzz = "^3.6.1"
-streamlit = "^1.31.0"
-pytest = "^8.3.4"
-pdftext = "^0.5.1"
-tabulate = "^0.9.0"
+[dependency-groups]
+dev = [
+    "jupyter>=1.0.0,<2.0.0",
+    "pytesseract>=0.3.10,<1.0.0",
+    "pymupdf>=1.23.8,<2.0.0",
+    "datasets>=2.16.1,<3.0.0",
+    "rapidfuzz>=3.6.1,<4.0.0",
+    "streamlit>=1.31.0,<2.0.0",
+    "pytest>=8.3.4,<9.0.0",
+    "pdftext>=0.5.1,<1.0.0",
+    "tabulate>=0.9.0,<1.0.0",
+]
 
-[tool.poetry.scripts]
+[project.scripts]
 surya_detect = "surya.scripts.detect_text:detect_text_cli"
 surya_ocr = "surya.scripts.ocr_text:ocr_text_cli"
 surya_layout = "surya.scripts.detect_layout:detect_layout_cli"
@@ -47,22 +54,18 @@ surya_table = "surya.scripts.table_recognition:table_recognition_cli"
 surya_latex_ocr = "surya.scripts.ocr_latex:ocr_latex_cli"
 texify_gui = "surya.scripts.run_texify_app:texify_app_cli"
 
+[project.urls]
+Repository = "https://github.com/VikParuchuri/surya"
+
 [build-system]
-requires = ["poetry-core"]
-build-backend = "poetry.core.masonry.api"
+requires = ["hatchling"]
+build-backend = "hatchling.build"
 
-[[tool.poetry.source]]
-name = "libtpu-releases"
-url = "https://storage.googleapis.com/libtpu-releases/index.html"
-priority = "supplemental"
+[tool.hatch.build.targets.wheel]
+packages = ["surya"]
 
-[[tool.poetry.source]]
-name = "libtpu-wheels"
-url = "https://storage.googleapis.com/libtpu-wheels/index.html"
-priority = "supplemental"
-
-[tool.poetry.group.xla]
-optional = true
-
-[tool.poetry.group.xla.dependencies]
-torch-xla = {version = "^2.4.1", extras = ["tpu"]}
+[tool.uv]
+extra-index-url = [
+    "https://storage.googleapis.com/libtpu-releases/index.html",
+    "https://storage.googleapis.com/libtpu-wheels/index.html",
+]
