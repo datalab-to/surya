@@ -1,4 +1,5 @@
 from typing import List
+from pathlib import Path
 
 import click
 import os
@@ -37,7 +38,7 @@ class CLILoader:
                 highres_images, _ = load_from_folder(self.filepath, self.page_range, settings.IMAGE_DPI_HIGHRES)
         else:
             images, names = load_from_file(self.filepath, self.page_range)
-            folder_name = os.path.basename(self.filepath).split(".")[0]
+            folder_name = Path(self.filepath).stem
             if highres:
                 highres_images, _ = load_from_file(self.filepath, self.page_range, settings.IMAGE_DPI_HIGHRES)
 

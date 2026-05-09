@@ -1,4 +1,5 @@
 from typing import List
+from pathlib import Path
 import PIL
 
 from surya.input.processing import open_pdf, get_page_images
@@ -13,7 +14,7 @@ logger = get_logger()
 
 
 def get_name_from_path(path):
-    return os.path.basename(path).split(".")[0]
+    return Path(path).stem
 
 
 def load_pdf(pdf_path, page_range: List[int] | None = None, dpi=settings.IMAGE_DPI):
