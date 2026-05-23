@@ -76,13 +76,15 @@ class Settings(BaseSettings):
     COMPILE_DETECTOR: bool = False
 
     # Text recognition
-    FOUNDATION_MODEL_CHECKPOINT: str = "s3://text_recognition/2025_08_29"
+    FOUNDATION_MODEL_CHECKPOINT: str = "s3://text_recognition/2025_09_23"
     FOUNDATION_MODEL_QUANTIZE: bool = False
     FOUNDATION_MAX_TOKENS: Optional[int] = None
     FOUNDATION_CHUNK_SIZE: Optional[int] = None
+    FOUNDATION_PAD_TO_NEAREST: int = 256
     COMPILE_FOUNDATION: bool = False
     FOUNDATION_MULTI_TOKEN_MIN_CONFIDENCE: float = 0.9
 
+    RECOGNITION_MODEL_CHECKPOINT: str = "s3://text_recognition/2025_09_23"
     RECOGNITION_BATCH_SIZE: Optional[int] = (
         None  # Defaults to 8 for CPU/MPS, 256 otherwise
     )
@@ -99,7 +101,7 @@ class Settings(BaseSettings):
     RECOGNITION_PAD_VALUE: int = 255  # Should be 0 or 255
 
     # Layout
-    LAYOUT_MODEL_CHECKPOINT: str = "s3://layout/2025_02_18"
+    LAYOUT_MODEL_CHECKPOINT: str = "s3://layout/2025_09_23"
     LAYOUT_IMAGE_SIZE: Dict = {"height": 768, "width": 768}
     LAYOUT_SLICE_MIN: Dict = {
         "height": 1500,
@@ -147,6 +149,12 @@ class Settings(BaseSettings):
         return (
             self.COMPILE_ALL or self.COMPILE_LAYOUT or self.TORCH_DEVICE_MODEL == "xla"
         )
+
+    @computed_field
+    def FOUNDATION_XLA(self) -> bool:
+        return (
+            self.TORCH_DEVICE_MODEL == "xla"
+        )  # We need to static cache and pad to batch size for XLA, since it will recompile otherwise
 
     @computed_field
     def FOUNDATION_STATIC_CACHE(self) -> bool:

@@ -11,6 +11,7 @@ from surya.layout import LayoutPredictor
 from surya.table_rec import TableRecPredictor
 from surya.debug.draw import draw_bboxes_on_image
 from surya.common.util import rescale_bbox, expand_bbox
+from surya.settings import settings
 
 configure_logging()
 logger = get_logger()
@@ -27,8 +28,9 @@ logger = get_logger()
 def table_recognition_cli(input_path: str, skip_table_detection: bool, **kwargs):
     loader = CLILoader(input_path, kwargs, highres=True)
 
+    foundation_predictor = FoundationPredictor(checkpoint=settings.LAYOUT_MODEL_CHECKPOINT)
+    layout_predictor = LayoutPredictor(foundation_predictor)
     table_rec_predictor = TableRecPredictor()
-    layout_predictor = LayoutPredictor()
 
     pnums = []
     prev_name = None

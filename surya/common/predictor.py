@@ -40,9 +40,15 @@ class BasePredictor:
         self._disable_tqdm = settings.DISABLE_TQDM
 
     def to(self, device_dtype: torch.device | str | None = None):
-        if self.model:
+        model_moved = False
+        if hasattr(self, "model") and self.model:
             self.model.to(device_dtype)
-        else:
+            model_moved = True
+        if hasattr(self, "foundation_predictor") and self.foundation_predictor:
+            self.foundation_predictor.model.to(device_dtype)
+            model_moved = True
+
+        if not model_moved:
             raise ValueError("Model not loaded")
 
     def get_batch_size(self):
@@ -58,6 +64,11 @@ class BasePredictor:
         current_batch_size = tensor.shape[0]
         if current_batch_size >= batch_size:
             return tensor
+
+        if len(tensor.shape) == 1:
+            # If tensor is 1D, we need to pad it to the batch size
+            pad_size = batch_size - current_batch_size
+            return F.pad(tensor, (0, pad_size), mode="constant", value=0)
 
         pad_size = batch_size - current_batch_size
         padding = (0, 0) * (tensor.dim() - 1) + (0, pad_size)

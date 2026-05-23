@@ -10,6 +10,7 @@ from surya.ocr_error import OCRErrorPredictor
 from surya.foundation import FoundationPredictor
 from surya.recognition import RecognitionPredictor
 from surya.table_rec import TableRecPredictor
+from surya.settings import settings
 
 configure_logging()
 
@@ -17,11 +18,10 @@ configure_logging()
 def load_predictors(
     device: str | torch.device | None = None, dtype: torch.dtype | str | None = None
 ) -> Dict[str, BasePredictor]:
-    foundation_predictor = FoundationPredictor(device=device, dtype=dtype)
     return {
-        "layout": LayoutPredictor(device=device, dtype=dtype),
+        "layout": LayoutPredictor(FoundationPredictor(checkpoint=settings.LAYOUT_MODEL_CHECKPOINT)),
         "ocr_error": OCRErrorPredictor(device=device, dtype=dtype),
-        "recognition": RecognitionPredictor(foundation_predictor),
+        "recognition": RecognitionPredictor(FoundationPredictor(checkpoint=settings.RECOGNITION_MODEL_CHECKPOINT)),
         "detection": DetectionPredictor(device=device, dtype=dtype),
         "table_rec": TableRecPredictor(device=device, dtype=dtype),
     }

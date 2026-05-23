@@ -1,0 +1,17 @@
+LAYOUT_PRED_RELABEL = {
+    "<page-header>": "PageHeader",
+    "<page-footer>": "PageFooter",
+    "<footnote>": "Footnote",
+    "<image>": "Picture",
+    "<figure>": "Figure",
+    "<text>": "Text",
+    "<caption>": "Caption",
+    "<list-item>": "ListItem",
+    "<section-header>": "SectionHeader",
+    "<table>": "Table",
+    "<table-of-contents>": "TableOfContents",
+    "<form>": "Form",
+    "<equation-block>": "Equation",
+    "<code-block>": "Code",
+    "<complex-block>": "Figure",
+}

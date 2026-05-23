@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "surya-ocr"
-version = "0.16.7"
+version = "0.17.1"
 description = "OCR, layout, reading order, and table recognition in 90+ languages"
 authors = ["Vik Paruchuri <vik.paruchuri@gmail.com>"]
 readme = "README.md"

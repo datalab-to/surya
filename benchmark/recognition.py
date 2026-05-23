@@ -103,6 +103,10 @@ def normalize_text(text: str) -> str:
     help="Comma-separated list of languages to benchmark.",
     default=None,
 )
+@click.option(
+    "--print_results",
+    is_flag=True,
+)
 def main(
     results_dir: str,
     max_rows: int,
@@ -112,6 +116,7 @@ def main(
     tess_cpus: int,
     textract_cpus: int,
     languages: str | None,
+    print_results: bool,
 ):
     foundation_predictor = FoundationPredictor()
     rec_predictor = RecognitionPredictor(foundation_predictor)
@@ -351,6 +356,23 @@ def main(
             image.save(os.path.join(result_path, f"{'_'.join(lang)}_{idx}_image.png"))
 
     print(f"Wrote results to {result_path}")
+
+    if print_results:
+        for idx, (pred, ref_text) in enumerate(zip(predictions_by_image, line_text)):
+            print(f"Image {idx}")
+            print("----")
+            for line_idx, (pred_line, ref_line) in enumerate(
+                zip(pred.text_lines, ref_text)
+            ):
+                print(f"Sample {line_idx}")
+                print(f"Pred: {pred_line.text}")
+                print(f"Ref: {ref_line}")
+                print()
+
+    if settings.TORCH_DEVICE == "xla":
+        import torch_xla.debug.metrics as met
+
+        print(met.short_metrics_report())
 
 
 if __name__ == "__main__":

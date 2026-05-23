@@ -20,6 +20,7 @@ from surya.common.surya.processor.schema import (
 )
 from surya.common.surya.schema import TaskNames
 from surya.logging import get_logger
+from surya.settings import settings
 
 logger = get_logger()
 
@@ -39,6 +40,7 @@ OCR_WITH_BOXES_BOS_TOKEN = "<OCR-WB>"
 OCR_WITHOUT_BOXES_BOS_TOKEN = "<OCR-WOB>"
 BLOCK_WITHOUT_BOXES_TOKEN = "<BLOCKS-WOB>"
 LAYOUT_BOS_TOKEN = "<LAYOUT>"
+TABLE_STRUCTURE_BOS_TOKEN = "<TABLE-STRUCTURE>"
 
 
 class SuryaOCRProcessor(S3DownloaderMixin, ProcessorMixin):
@@ -100,9 +102,10 @@ class SuryaOCRProcessor(S3DownloaderMixin, ProcessorMixin):
             TaskNames.block_without_boxes: self.special_token_mapping.get(
                 BLOCK_WITHOUT_BOXES_TOKEN
             ),
-            TaskNames.layout: self.special_token_mapping.get(
-                LAYOUT_BOS_TOKEN
-            )
+            TaskNames.layout: self.special_token_mapping.get(LAYOUT_BOS_TOKEN),
+            TaskNames.table_structure: self.special_token_mapping.get(
+                TABLE_STRUCTURE_BOS_TOKEN
+            ),
         }
 
         if self.image_token_id is None:
@@ -199,15 +202,23 @@ class SuryaOCRProcessor(S3DownloaderMixin, ProcessorMixin):
         Resizes the input image to the closest multiple of tile_size while preserving the aspect ratio
         and returns a tensor of image tiles.
         """
+        extra_multipler = (
+            4 if settings.FOUNDATION_XLA else 1
+        )  # Needed to force same size grid_thws per row with padding
 
-        factor = self.patch_size * self.merge_size
+        factor = (
+            self.patch_size * self.merge_size * extra_multipler
+        )  # Make a multiple of window size
 
         height, width = image.shape[:2]
 
         h_bar = math.ceil(height / factor) * factor
         w_bar = math.ceil(width / factor) * factor
         if h_bar != height or w_bar != width:
-            image = cv2.resize(image, (w_bar, h_bar), interpolation=cv2.INTER_CUBIC)
+            if height == 0 or width == 0:
+                image = np.zeros((h_bar, w_bar, 3), dtype=np.uint8)
+            else:
+                image = cv2.resize(image, (w_bar, h_bar), interpolation=cv2.INTER_CUBIC)
 
         # Handle scaling and normalization
         image = self._image_processor(image)
@@ -347,6 +358,11 @@ class SuryaOCRProcessor(S3DownloaderMixin, ProcessorMixin):
             mixed_input, bos_token_id=bos_token_id, task="layout"
         )
 
+    def _process_table_structure(self, mixed_input: List[dict], bos_token_id: int):
+        return self._process_ocr_with_boxes(
+            mixed_input, bos_token_id=bos_token_id, task="table_structure"
+        )
+
     def _process_ocr_without_boxes(
         self,
         mixed_input: List[dict],
@@ -382,7 +398,7 @@ class SuryaOCRProcessor(S3DownloaderMixin, ProcessorMixin):
         mixed_batch: List[dict],
         padding_side: Optional[str] = "left",
         device: Optional[torch.device] = None,
-        pad_to_multiple: Optional[int] = None
+        pad_to_multiple: Optional[int] = None,
     ):
         all_image_tiles = []
         all_input_ids = []
@@ -408,18 +424,18 @@ class SuryaOCRProcessor(S3DownloaderMixin, ProcessorMixin):
             padding_side=padding_side,
             padding_value=self.pad_token_id,
         )
-        
+
         if pad_to_multiple is not None:
             current_len = batched_input_ids.shape[1]
             # Calculate the next multiple of pad_to_multiple
-            padded_len = ((current_len + pad_to_multiple - 1) // pad_to_multiple) * pad_to_multiple
-            
+            padded_len = (
+                (current_len + pad_to_multiple - 1) // pad_to_multiple
+            ) * pad_to_multiple
+
             if padded_len > current_len:
                 pad_len = padded_len - current_len
                 batched_input_ids = torch.nn.functional.pad(
-                    batched_input_ids,
-                    (pad_len, 0),
-                    value=self.pad_token_id
+                    batched_input_ids, (pad_len, 0), value=self.pad_token_id
                 )
 
         attention_mask = batched_input_ids.ne(self.pad_token_id)

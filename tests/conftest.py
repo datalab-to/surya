@@ -11,12 +11,7 @@ from surya.layout import LayoutPredictor
 from surya.recognition import RecognitionPredictor
 from surya.foundation import FoundationPredictor
 from surya.table_rec import TableRecPredictor
-
-@pytest.fixture(scope="session")
-def foundation_predictor() -> FoundationPredictor:
-    foundation_predictor = FoundationPredictor()
-    yield foundation_predictor
-    del foundation_predictor
+from surya.settings import settings
 
 @pytest.fixture(scope="session")
 def ocr_error_predictor() -> OCRErrorPredictor:
@@ -27,7 +22,7 @@ def ocr_error_predictor() -> OCRErrorPredictor:
 
 @pytest.fixture(scope="session")
 def layout_predictor() -> LayoutPredictor:
-    layout_predictor = LayoutPredictor()
+    layout_predictor = LayoutPredictor(FoundationPredictor(checkpoint=settings.LAYOUT_MODEL_CHECKPOINT))
     yield layout_predictor
     del layout_predictor
 
@@ -40,8 +35,8 @@ def detection_predictor() -> DetectionPredictor:
 
 
 @pytest.fixture(scope="session")
-def recognition_predictor(foundation_predictor) -> RecognitionPredictor:
-    recognition_predictor = RecognitionPredictor(foundation_predictor)
+def recognition_predictor() -> RecognitionPredictor:
+    recognition_predictor = RecognitionPredictor(FoundationPredictor(checkpoint=settings.RECOGNITION_MODEL_CHECKPOINT))
     yield recognition_predictor
     del recognition_predictor
 

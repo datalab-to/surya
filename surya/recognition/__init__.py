@@ -49,7 +49,7 @@ class RecognitionPredictor(BasePredictor):
         self.tasks = self.foundation_predictor.tasks
 
     # Special handling for disable tqdm to pass into foundation predictor
-    # Make sure they are kepy in sync
+    # Make sure they are kept in sync
     @property
     def disable_tqdm(self) -> bool:
         return super().disable_tqdm
@@ -438,6 +438,7 @@ class RecognitionPredictor(BasePredictor):
             max_lookahead_tokens=self.foundation_predictor.model.config.multi_output_distance,
             max_sliding_window=max_sliding_window,
             max_tokens=max_tokens,
+            tqdm_desc="Recognizing Text"
         )
 
         # Get text and bboxes in structured form

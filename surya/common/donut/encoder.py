@@ -17,7 +17,7 @@ from transformers.utils import ModelOutput
 from transformers import DonutSwinConfig
 
 from surya.common.pretrained import SuryaPreTrainedModel
-from surya.common.util import mark_step
+from surya.common.xla import mark_step
 
 _EXPECTED_OUTPUT_SHAPE = [1, 49, 1024]
 
@@ -424,7 +424,6 @@ class DonutSwinSelfAttention(nn.Module):
             attention_mask = attention_mask.repeat(repeat_count, 1, 1).unsqueeze(1)
             attention_mask = attention_mask + relative_position_bias
 
-        mark_step()
         attn_output = torch.nn.functional.scaled_dot_product_attention(
             query_layer,
             key_layer,
@@ -433,7 +432,6 @@ class DonutSwinSelfAttention(nn.Module):
             dropout_p=0.0,
             scale=self.attention_head_size**-0.5,
         )
-        mark_step()
 
         attn_output = attn_output.transpose(1, 2).contiguous()
         attn_output = attn_output.view(batch_size, dim, num_channels)

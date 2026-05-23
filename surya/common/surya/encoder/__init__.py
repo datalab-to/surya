@@ -8,8 +8,14 @@ from transformers.activations import ACT2FN
 
 from surya.common.pretrained import SuryaPreTrainedModel
 from surya.common.surya.encoder.config import SuryaEncoderConfig
+from surya.common.xla import get_nearest_pad
 from surya.logging import get_logger
+from surya.settings import settings
 
+if settings.FOUNDATION_XLA:
+    import torch_xla.experimental.custom_kernel
+
+from surya.logging import get_logger
 logger = get_logger()
 
 
@@ -128,6 +134,133 @@ def apply_rotary_pos_emb_flashatt(
     q_embed = apply_rotary_emb(q.float(), cos.float(), sin.float()).type_as(q)
     k_embed = apply_rotary_emb(k.float(), cos.float(), sin.float()).type_as(k)
     return q_embed, k_embed
+
+
+class Qwen2_5_VLVisionXLASdpaAttention(nn.Module):
+    def __init__(self, dim: int, num_heads: int = 16) -> None:
+        super().__init__()
+        self.num_heads = num_heads
+        self.qkv = nn.Linear(dim, dim * 3, bias=True)
+        self.proj = nn.Linear(dim, dim)
+        self.head_dim = dim // num_heads
+
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        cu_seqlens: torch.Tensor,
+        rotary_pos_emb: Optional[torch.Tensor] = None,
+        position_embeddings: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
+    ) -> torch.Tensor:
+        bsz, seq_length = hidden_states.shape[0], hidden_states.shape[1]
+        q, k, v = (
+            self.qkv(hidden_states)
+            .reshape(bsz, seq_length, 3, self.num_heads, -1)
+            .permute(0, 2, 1, 3, 4)
+            .unbind(1)
+        )
+        if position_embeddings is None:
+            logger.warning_once(
+                "The attention layers in this model are transitioning from computing the RoPE embeddings internally "
+                "through `rotary_pos_emb` (2D tensor of RoPE theta values), to using externally computed "
+                "`position_embeddings` (Tuple of tensors, containing cos and sin). In v4.54 `rotary_pos_emb` will be "
+                "removed and `position_embeddings` will be mandatory."
+            )
+            emb = torch.cat((rotary_pos_emb, rotary_pos_emb), dim=-1)
+            cos = emb.cos()
+            sin = emb.sin()
+        else:
+            cos, sin = position_embeddings
+        q, k = apply_rotary_pos_emb_vision(q, k, cos, sin)
+
+        attention_mask = torch.zeros([bsz, 1, seq_length, seq_length], dtype=torch.bool)
+        cu_seqlens_cpu = cu_seqlens.cpu()
+        for j in range(bsz):
+            batch_seqlens = cu_seqlens_cpu[j]
+            for i in range(1, len(batch_seqlens)):
+                attention_mask[
+                    j,
+                    ...,
+                    batch_seqlens[i - 1] : batch_seqlens[i],
+                    batch_seqlens[i - 1] : batch_seqlens[i],
+                ] = True
+
+        attention_mask = attention_mask.to(q.device)
+
+        q = q.transpose(1, 2)
+        k = k.transpose(1, 2)
+        v = v.transpose(1, 2)
+
+        attn_output = F.scaled_dot_product_attention(
+            q,
+            k,
+            v,
+            attention_mask,
+            dropout_p=0.0,
+        )
+        attn_output = attn_output.transpose(1, 2)
+        attn_output = attn_output.reshape(bsz, seq_length, -1)
+        attn_output = self.proj(attn_output)
+        return attn_output
+
+
+class Qwen2_5_VLVisionXLAFlashAttention2(nn.Module):
+    def __init__(self, dim: int, num_heads: int = 16) -> None:
+        super().__init__()
+        self.num_heads = num_heads
+        self.qkv = nn.Linear(dim, dim * 3, bias=True)
+        self.proj = nn.Linear(dim, dim)
+        self.head_dim = dim // num_heads
+
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        cu_seqlens: torch.Tensor,
+        rotary_pos_emb: Optional[torch.Tensor] = None,
+        position_embeddings: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
+    ) -> torch.Tensor:
+        # Note, this is faster than SDPA, but pretty memory inefficient
+        # It also has significant accuracy issues
+
+        bsz, seq_length = hidden_states.shape[0], hidden_states.shape[1]
+
+        # Single reshape to target layout - avoid multiple operations
+        q, k, v = (
+            self.qkv(hidden_states)
+            .reshape(bsz, seq_length, 3, self.num_heads, -1)
+            .permute(0, 2, 1, 3, 4)
+            .unbind(1)
+        )
+
+        # Apply rotary embeddings if provided
+        if position_embeddings is not None:
+            cos, sin = position_embeddings
+            q, k = apply_rotary_pos_emb_vision(q, k, cos, sin)
+
+        # Single reshape to flash attention format [batch, num_heads, seq_len, head_dim]
+        q = q.transpose(1, 2)  # [bsz, num_heads, seq_len, head_dim]
+        k = k.transpose(1, 2)
+        v = v.transpose(1, 2)
+
+        total_seqlen = q.shape[2]
+        # from cu_seqlens to segment ids for each position in dim 0
+        additive_bias = torch.zeros((bsz, 1, total_seqlen, total_seqlen), dtype=q.dtype)
+        min_val = torch.finfo(q.dtype).min
+
+        for i in range(bsz):
+            padding_end = cu_seqlens[i][1].item()
+            additive_bias[i, :, :, :padding_end] = min_val
+
+        additive_bias = additive_bias.to(hidden_states.device)
+
+        attn_scale = 1 / math.sqrt(self.head_dim)
+        attn_output = torch_xla.experimental.custom_kernel.flash_attention(
+            q, k, v, sm_scale=attn_scale, ab=additive_bias
+        )
+        attn_output = (
+            attn_output.transpose(1, 2).contiguous().reshape(bsz, seq_length, -1)
+        )
+        attn_output = self.proj(attn_output)
+        return attn_output
 
 
 class Qwen2_5_VLVisionFlashAttention2(nn.Module):
@@ -304,6 +437,18 @@ class Qwen2_5_VLVisionSdpaAttention(nn.Module):
         seq_lengths = cu_seqlens[1:] - cu_seqlens[:-1]  # Keep as tensor
         max_seq_len = seq_lengths.max().item()  # Use .max() on tensor
 
+        if settings.FOUNDATION_STATIC_CACHE:
+            # Pad max_seq_len to the nearest multiple for compilation
+            max_seq_len = get_nearest_pad(max_seq_len, pad_multiple=16)
+
+            # Pad batch_size to the nearest multiple for compilation
+            batch_size = get_nearest_pad(batch_size, pad_multiple=2)
+
+            # Ensure seq_lengths is a tensor of the correct size
+            seq_lengths = F.pad(
+                seq_lengths, (0, batch_size - seq_lengths.size(0)), "constant", 0
+            )
+
         # some day, you may look at this, and think: "what if I used repeat_interlave or some other fancy torch instead"?
         # don't do this - it's a path to madness.  For some reason, this loop is optimal
 
@@ -421,8 +566,12 @@ class Qwen2_5_VLVisionSdpaAttention(nn.Module):
 
 QWEN2_5_VL_VISION_ATTENTION_CLASSES = {
     "eager": Qwen2_5_VLVisionAttention,
-    "flash_attention_2": Qwen2_5_VLVisionFlashAttention2,
-    "sdpa": Qwen2_5_VLVisionSdpaAttention,
+    "flash_attention_2": Qwen2_5_VLVisionXLAFlashAttention2
+    if settings.FOUNDATION_XLA
+    else Qwen2_5_VLVisionFlashAttention2,
+    "sdpa": Qwen2_5_VLVisionXLASdpaAttention
+    if settings.FOUNDATION_XLA
+    else Qwen2_5_VLVisionSdpaAttention,
 }
 
 
@@ -583,9 +732,6 @@ class Qwen2_5_VisionTransformerPretrainedModel(Qwen2_5_VLPreTrainedModel):
         Returns:
             `torch.Tensor`: hidden_states.
         """
-        hidden_states = hidden_states.unsqueeze(0)
-        grid_thw = grid_thw.unsqueeze(0)
-
         bsz, seq_len, _ = hidden_states.size()
         hidden_states = self.patch_embed(hidden_states)  # (bsz, seq_len, hidden_dim)
         rotary_pos_emb = self.rot_pos_emb(grid_thw)
@@ -623,7 +769,6 @@ class Qwen2_5_VisionTransformerPretrainedModel(Qwen2_5_VLPreTrainedModel):
                 )
 
         hidden_states = self.merger(hidden_states)
-        hidden_states = hidden_states.squeeze(0)
         return hidden_states
 
 

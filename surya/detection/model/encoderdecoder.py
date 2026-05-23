@@ -5,6 +5,8 @@ Original paper at https://arxiv.org/abs/2205.14756
 
 Code adapted from timm, https://github.com/huggingface/pytorch-image-models/blob/main/timm/models/efficientvit_mit.py
 Original code (that timm adapted from) at https://github.com/mit-han-lab/efficientvit
+
+License: Apache 2
 """
 
 from __future__ import annotations

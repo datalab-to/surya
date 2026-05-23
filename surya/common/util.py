@@ -3,8 +3,9 @@ from typing import List
 import torch
 from functools import lru_cache
 
+import torch.nn.functional as F
+
 from surya.common.polygon import PolygonBox
-from surya.settings import settings
 
 
 def clean_boxes(boxes: List[PolygonBox]) -> List[PolygonBox]:
@@ -243,12 +244,28 @@ def is_flash_attn_2_supported(device: str | torch.device) -> bool:
     return True
 
 
-if settings.TORCH_DEVICE_MODEL == "xla":
-    import torch_xla.core.xla_model as xm
-else:
-    xm = None
+def pad_to_batch_size_repeat(tensor: torch.Tensor, batch_size: int):
+    current_batch_size = tensor.shape[0]
+    if current_batch_size >= batch_size:
+        return tensor
+
+    pad_size = batch_size - current_batch_size
+    if pad_size < 0:
+        return tensor
+
+    # Repeat the last row pad_size times
+    last_row = tensor[-1:].repeat(pad_size, 1, 1)
+
+    # Concatenate original tensor with repeated last rows
+    return torch.cat([tensor, last_row], dim=0)
 
 
-def mark_step():
-    if xm is not None:
-        xm.mark_step()
+def pad_to_batch_size(tensor: torch.Tensor, batch_size: int):
+    current_batch_size = tensor.shape[0]
+    if current_batch_size >= batch_size:
+        return tensor
+
+    pad_size = batch_size - current_batch_size
+    padding = (0, 0) * (tensor.dim() - 1) + (0, pad_size)
+
+    return F.pad(tensor, padding, mode="constant", value=0)

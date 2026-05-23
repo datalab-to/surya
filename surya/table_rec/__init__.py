@@ -7,7 +7,7 @@ import torch
 from PIL import Image
 from tqdm import tqdm
 
-from surya.common.util import mark_step
+from surya.common.xla import mark_step
 from surya.common.predictor import BasePredictor
 from surya.table_rec.schema import TableCell, TableRow, TableCol, TableResult
 from surya.common.polygon import PolygonBox

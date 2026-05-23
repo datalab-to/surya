@@ -1,7 +1,4 @@
-import argparse
-
 import click
-from PIL import ImageDraw
 import collections
 import json
 
@@ -19,8 +16,18 @@ import datasets
 
 
 @click.command(help="Benchmark table rec dataset")
-@click.option("--results_dir", type=str, help="Path to JSON file with benchmark results.", default=os.path.join(settings.RESULT_DIR, "benchmark"))
-@click.option("--max_rows", type=int, help="Maximum number of images to run benchmark on.", default=512)
+@click.option(
+    "--results_dir",
+    type=str,
+    help="Path to JSON file with benchmark results.",
+    default=os.path.join(settings.RESULT_DIR, "benchmark"),
+)
+@click.option(
+    "--max_rows",
+    type=int,
+    help="Maximum number of images to run benchmark on.",
+    default=512,
+)
 @click.option("--tatr", is_flag=True, help="Run table transformer.", default=False)
 @click.option("--debug", is_flag=True, help="Enable debug mode.", default=False)
 def main(results_dir: str, max_rows: int, tatr: bool, debug: bool):
@@ -62,7 +69,7 @@ def main(results_dir: str, max_rows: int, tatr: bool, debug: bool):
             "row_score": row_score,
             "col_score": col_score,
             "row_count": len(actual_row_bboxes),
-            "col_count": len(actual_col_bboxes)
+            "col_count": len(actual_col_bboxes),
         }
 
         mean_col_iou += col_score
@@ -73,25 +80,44 @@ def main(results_dir: str, max_rows: int, tatr: bool, debug: bool):
         if debug:
             # Save debug images
             draw_img = image.copy()
-            draw_bboxes_on_image(pred_row_boxes, draw_img, [f"Row {i}" for i in range(len(pred_row_boxes))])
-            draw_bboxes_on_image(pred_col_bboxes, draw_img, [f"Col {i}" for i in range(len(pred_col_bboxes))], color="blue")
+            draw_bboxes_on_image(
+                pred_row_boxes,
+                draw_img,
+                [f"Row {i}" for i in range(len(pred_row_boxes))],
+            )
+            draw_bboxes_on_image(
+                pred_col_bboxes,
+                draw_img,
+                [f"Col {i}" for i in range(len(pred_col_bboxes))],
+                color="blue",
+            )
             draw_img.save(os.path.join(result_path, f"{idx}_bbox.png"))
 
             actual_draw_image = image.copy()
-            draw_bboxes_on_image(actual_row_bboxes, actual_draw_image, [f"Row {i}" for i in range(len(actual_row_bboxes))])
-            draw_bboxes_on_image(actual_col_bboxes, actual_draw_image, [f"Col {i}" for i in range(len(actual_col_bboxes))], color="blue")
+            draw_bboxes_on_image(
+                actual_row_bboxes,
+                actual_draw_image,
+                [f"Row {i}" for i in range(len(actual_row_bboxes))],
+            )
+            draw_bboxes_on_image(
+                actual_col_bboxes,
+                actual_draw_image,
+                [f"Col {i}" for i in range(len(actual_col_bboxes))],
+                color="blue",
+            )
             actual_draw_image.save(os.path.join(result_path, f"{idx}_actual.png"))
-
 
     mean_col_iou /= len(table_rec_predictions)
     mean_row_iou /= len(table_rec_predictions)
 
-    out_data = {"surya": {
-        "time": surya_time,
-        "mean_row_iou": mean_row_iou,
-        "mean_col_iou": mean_col_iou,
-        "page_metrics": page_metrics
-    }}
+    out_data = {
+        "surya": {
+            "time": surya_time,
+            "mean_row_iou": mean_row_iou,
+            "mean_col_iou": mean_col_iou,
+            "page_metrics": page_metrics,
+        }
+    }
 
     if tatr:
         tatr_model = load_tatr()
@@ -114,7 +140,7 @@ def main(results_dir: str, max_rows: int, tatr: bool, debug: bool):
                 "row_score": row_score,
                 "col_score": col_score,
                 "row_count": len(actual_row_bboxes),
-                "col_count": len(actual_col_bboxes)
+                "col_count": len(actual_col_bboxes),
             }
 
             mean_col_iou += col_score
@@ -129,7 +155,7 @@ def main(results_dir: str, max_rows: int, tatr: bool, debug: bool):
             "time": tatr_time,
             "mean_row_iou": mean_row_iou,
             "mean_col_iou": mean_col_iou,
-            "page_metrics": page_metrics
+            "page_metrics": page_metrics,
         }
 
     with open(os.path.join(result_path, "results.json"), "w+", encoding="utf-8") as f:
@@ -137,18 +163,32 @@ def main(results_dir: str, max_rows: int, tatr: bool, debug: bool):
 
     table = [
         ["Model", "Row Intersection", "Col Intersection", "Time Per Image"],
-        ["Surya", f"{out_data['surya']['mean_row_iou']:.2f}", f"{out_data['surya']['mean_col_iou']:.5f}",
-         f"{surya_time / len(images):.5f}"],
+        [
+            "Surya",
+            f"{out_data['surya']['mean_row_iou']:.2f}",
+            f"{out_data['surya']['mean_col_iou']:.5f}",
+            f"{surya_time / len(images):.5f}",
+        ],
     ]
 
     if tatr:
-        table.append(["Table transformer", f"{out_data['tatr']['mean_row_iou']:.2f}", f"{out_data['tatr']['mean_col_iou']:.5f}",
-         f"{tatr_time / len(images):.5f}"])
+        table.append(
+            [
+                "Table transformer",
+                f"{out_data['tatr']['mean_row_iou']:.2f}",
+                f"{out_data['tatr']['mean_col_iou']:.5f}",
+                f"{tatr_time / len(images):.5f}",
+            ]
+        )
 
     print(tabulate(table, headers="firstrow", tablefmt="github"))
 
-    print("Intersection is the average of the intersection % between each actual row/column, and the predictions.  With penalties for too many/few predictions.")
-    print("Note that table transformers is unbatched, since the example code in the repo is unbatched.")
+    print(
+        "Intersection is the average of the intersection % between each actual row/column, and the predictions.  With penalties for too many/few predictions."
+    )
+    print(
+        "Note that table transformers is unbatched, since the example code in the repo is unbatched."
+    )
     print(f"Wrote results to {result_path}")
 
 

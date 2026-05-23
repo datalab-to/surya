@@ -3,6 +3,7 @@ import json
 
 import click
 
+from surya.foundation import FoundationPredictor
 from surya.input.processing import convert_if_not_rgb
 from surya.layout import LayoutPredictor
 from surya.common.polygon import PolygonBox
@@ -14,10 +15,21 @@ import datasets
 
 
 @click.command(help="Benchmark surya layout for reading order.")
-@click.option("--results_dir", type=str, help="Path to JSON file with benchmark results.", default=os.path.join(settings.RESULT_DIR, "benchmark"))
-@click.option("--max_rows", type=int, help="Maximum number of images to run benchmark on.", default=None)
+@click.option(
+    "--results_dir",
+    type=str,
+    help="Path to JSON file with benchmark results.",
+    default=os.path.join(settings.RESULT_DIR, "benchmark"),
+)
+@click.option(
+    "--max_rows",
+    type=int,
+    help="Maximum number of images to run benchmark on.",
+    default=None,
+)
 def main(results_dir: str, max_rows: int):
-    layout_predictor = LayoutPredictor()
+    foundation_predictor = FoundationPredictor(checkpoint=settings.LAYOUT_MODEL_CHECKPOINT)
+    layout_predictor = LayoutPredictor(foundation_predictor)
     pathname = "order_bench"
     # These have already been shuffled randomly, so sampling from the start is fine
     split = "train"
@@ -53,10 +65,7 @@ def main(results_dir: str, max_rows: int):
             pred_positions.append(matching_idx)
         accuracy = rank_accuracy(pred_positions, labels)
         mean_accuracy += accuracy
-        page_results = {
-            "accuracy": accuracy,
-            "box_count": len(labels)
-        }
+        page_results = {"accuracy": accuracy, "box_count": len(labels)}
 
         page_metrics[idx] = page_results
 
@@ -65,14 +74,16 @@ def main(results_dir: str, max_rows: int):
     out_data = {
         "time": surya_time,
         "mean_accuracy": mean_accuracy,
-        "page_metrics": page_metrics
+        "page_metrics": page_metrics,
     }
 
     with open(os.path.join(result_path, "results.json"), "w+", encoding="utf-8") as f:
         json.dump(out_data, f, indent=4)
 
     print(f"Mean accuracy is {mean_accuracy:.2f}.")
-    print(f"Took {surya_time / len(images):.2f} seconds per image, and {surya_time:.1f} seconds total.")
+    print(
+        f"Took {surya_time / len(images):.2f} seconds per image, and {surya_time:.1f} seconds total."
+    )
     print("Mean accuracy is the % of correct ranking pairs.")
     print(f"Wrote results to {result_path}")
 
