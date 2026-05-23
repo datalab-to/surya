@@ -28,16 +28,22 @@ def load_predictors_cached():
 def ocr_errors(pdf_file, page_count, sample_len=512, max_samples=10, max_pages=15):
     from pdftext.extraction import plain_text_output
 
-    with tempfile.NamedTemporaryFile(suffix=".pdf") as f:
+    with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as f:
         f.write(pdf_file.getvalue())
-        f.seek(0)
+        f.flush()
+        temp_path = f.name
 
+    try:
         # Sample the text from the middle of the PDF
         page_middle = page_count // 2
         page_range = range(
             max(page_middle - max_pages, 0), min(page_middle + max_pages, page_count)
         )
-        text = plain_text_output(f.name, page_range=page_range)
+        text = plain_text_output(temp_path, page_range=page_range)
+    finally:
+        # Clean up the temporary file
+        import os
+        os.unlink(temp_path)
 
     sample_gap = len(text) // max_samples
     if len(text) == 0 or sample_gap == 0:
