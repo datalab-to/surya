@@ -15,7 +15,7 @@ dependencies = [
     "pydantic>=2.5.3,<3",
     "pydantic-settings>=2.1.0,<3",
     "python-dotenv>=1.0.0,<2",
-    "pillow>=10.2.0,<11",
+    "pillow>=10.2.0,<13",
     "pypdfium2==4.30.0",
     "filetype>=1.2.0,<2",
     "click>=8.1.8,<9",
