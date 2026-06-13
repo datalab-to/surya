@@ -2,7 +2,16 @@ from collections import OrderedDict
 from typing import Mapping
 
 from transformers.configuration_utils import PretrainedConfig
-from transformers.onnx import OnnxConfig
+
+try:
+    from transformers.onnx import OnnxConfig
+except ImportError:
+    # transformers >= 5.0 removed the built-in ONNX exporter (the
+    # transformers.onnx package; export now lives in the `optimum`
+    # package). DistilBertOnnxConfig below is an ONNX-export helper that
+    # surya's torch inference path never uses, so when the exporter is
+    # absent we skip defining it rather than fail the whole import.
+    OnnxConfig = None
 
 from surya.common.s3 import S3DownloaderMixin
 
@@ -53,16 +62,18 @@ class DistilBertConfig(S3DownloaderMixin, PretrainedConfig):
         super().__init__(**kwargs, pad_token_id=pad_token_id)
 
 
-class DistilBertOnnxConfig(OnnxConfig):
-    @property
-    def inputs(self) -> Mapping[str, Mapping[int, str]]:
-        if self.task == "multiple-choice":
-            dynamic_axis = {0: "batch", 1: "choice", 2: "sequence"}
-        else:
-            dynamic_axis = {0: "batch", 1: "sequence"}
-        return OrderedDict(
-            [
-                ("input_ids", dynamic_axis),
-                ("attention_mask", dynamic_axis),
-            ]
-        )
+if OnnxConfig is not None:
+
+    class DistilBertOnnxConfig(OnnxConfig):
+        @property
+        def inputs(self) -> Mapping[str, Mapping[int, str]]:
+            if self.task == "multiple-choice":
+                dynamic_axis = {0: "batch", 1: "choice", 2: "sequence"}
+            else:
+                dynamic_axis = {0: "batch", 1: "sequence"}
+            return OrderedDict(
+                [
+                    ("input_ids", dynamic_axis),
+                    ("attention_mask", dynamic_axis),
+                ]
+            )
