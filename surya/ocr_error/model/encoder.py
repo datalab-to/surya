@@ -10,10 +10,30 @@ from torch.nn import functional as F, MSELoss, CrossEntropyLoss, BCEWithLogitsLo
 from transformers import apply_chunking_to_forward
 from transformers.activations import get_activation
 from transformers.modeling_outputs import BaseModelOutput, SequenceClassifierOutput
-from transformers.pytorch_utils import (
-    find_pruneable_heads_and_indices,
-    prune_linear_layer,
-)
+from transformers.pytorch_utils import prune_linear_layer
+
+try:
+    from transformers.pytorch_utils import find_pruneable_heads_and_indices
+except ImportError:
+    # transformers >= 5.0 removed this helper from pytorch_utils
+    # (https://github.com/datalab-to/surya/issues/492). Vendor the
+    # historical implementation so head pruning keeps working under 5.x.
+    # It is only invoked if MultiHeadSelfAttention.prune_heads() is called
+    # -- which surya inference never does -- but the import must resolve
+    # for this module (and therefore the OCR-error model) to load at all.
+    from typing import List, Set
+
+    def find_pruneable_heads_and_indices(
+        heads: List[int], n_heads: int, head_size: int, already_pruned_heads: Set[int]
+    ):
+        mask = torch.ones(n_heads, head_size)
+        heads = set(heads) - already_pruned_heads
+        for head in heads:
+            head = head - sum(1 if h < head else 0 for h in already_pruned_heads)
+            mask[head] = 0
+        mask = mask.view(-1).contiguous().eq(1)
+        index = torch.arange(len(mask))[mask].long()
+        return heads, index
 
 from transformers.utils import (
     is_flash_attn_greater_or_equal_2_10,
@@ -87,18 +107,19 @@ class Embeddings(nn.Module):
 
         seq_length = input_embeds.size(1)
 
-        # Setting the position-ids to the registered buffer in constructor, it helps
-        # when tracing the model without passing position-ids, solves
-        # isues similar to issue #5664
-        if hasattr(self, "position_ids"):
-            position_ids = self.position_ids[:, :seq_length]
-        else:
-            position_ids = torch.arange(
-                seq_length, dtype=torch.long, device=input_ids.device
-            )  # (max_seq_length)
-            position_ids = position_ids.unsqueeze(0).expand_as(
-                input_ids
-            )  # (bs, max_seq_length)
+        # Compute position ids dynamically rather than reading the
+        # `position_ids` buffer registered in __init__. That buffer is
+        # registered persistent=False, so it is absent from the checkpoint;
+        # under transformers >= 5.0's meta-device fast init the __init__
+        # torch.arange never materializes and the buffer is left as
+        # uninitialized memory -> out-of-range indices into
+        # position_embeddings. Deriving from arange here is equivalent to
+        # the correctly-initialized buffer ([0..seq_length-1]) and works on
+        # both transformers 4.x and 5.x. (The old fallback branch also
+        # referenced input_ids.device when input_ids may be None.)
+        position_ids = torch.arange(
+            seq_length, dtype=torch.long, device=input_embeds.device
+        ).unsqueeze(0)  # (1, seq_length); broadcasts across the batch
 
         position_embeddings = self.position_embeddings(
             position_ids
@@ -736,6 +757,28 @@ class DistilBertModel(DistilBertPreTrainedModel):
         """
         for layer, heads in heads_to_prune.items():
             self.transformer.layer[layer].attention.prune_heads(heads)
+
+    def get_head_mask(self, head_mask, num_hidden_layers, is_attention_chunked=False):
+        # transformers >= 5.0 removed ModuleUtilsMixin.get_head_mask (and
+        # _convert_head_mask_to_5d). Vendor the upstream implementation so
+        # the forward pass works on both 4.x and 5.x. At inference
+        # head_mask is None, so this returns [None] * num_hidden_layers;
+        # the conversion branch preserves behavior if a real head_mask is
+        # ever supplied.
+        if head_mask is not None:
+            if head_mask.dim() == 1:
+                head_mask = (
+                    head_mask.unsqueeze(0).unsqueeze(0).unsqueeze(-1).unsqueeze(-1)
+                )
+                head_mask = head_mask.expand(num_hidden_layers, -1, -1, -1, -1)
+            elif head_mask.dim() == 2:
+                head_mask = head_mask.unsqueeze(1).unsqueeze(-1).unsqueeze(-1)
+            head_mask = head_mask.to(dtype=self.dtype)
+            if is_attention_chunked is True:
+                head_mask = head_mask.unsqueeze(-1)
+        else:
+            head_mask = [None] * num_hidden_layers
+        return head_mask
 
     def forward(
         self,

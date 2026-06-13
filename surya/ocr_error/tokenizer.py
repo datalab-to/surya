@@ -3,12 +3,34 @@ import os
 import unicodedata
 from typing import List, Optional, Tuple
 
-from transformers.tokenization_utils import (
-    PreTrainedTokenizer,
-    _is_control,
-    _is_punctuation,
-    _is_whitespace,
-)
+from transformers.tokenization_utils import PreTrainedTokenizer
+
+try:
+    from transformers.tokenization_utils import (
+        _is_control,
+        _is_punctuation,
+        _is_whitespace,
+    )
+except ImportError:
+    # transformers >= 5.0 removed these private BERT char-classification
+    # helpers from transformers.tokenization_utils. Vendor the upstream
+    # implementations (unchanged Unicode-category logic) so the basic
+    # tokenizer keeps identical behavior under transformers 5.x.
+    def _is_whitespace(char):
+        if char in (" ", "\t", "\n", "\r"):
+            return True
+        return unicodedata.category(char) == "Zs"
+
+    def _is_control(char):
+        if char in ("\t", "\n", "\r"):
+            return False
+        return unicodedata.category(char).startswith("C")
+
+    def _is_punctuation(char):
+        cp = ord(char)
+        if (33 <= cp <= 47) or (58 <= cp <= 64) or (91 <= cp <= 96) or (123 <= cp <= 126):
+            return True
+        return unicodedata.category(char).startswith("P")
 
 from surya.common.s3 import S3DownloaderMixin
 
