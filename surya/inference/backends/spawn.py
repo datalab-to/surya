@@ -56,12 +56,26 @@ def probe_health(base_url: str, timeout: float = 1.0) -> bool:
 
 
 def wait_for_health(
-    base_url: str, total_timeout: float = 300.0, interval: float = 1.0
+    base_url: str,
+    total_timeout: float = 300.0,
+    interval: float = 1.0,
+    is_alive: Optional[Callable[[], Optional[bool]]] = None,
 ) -> bool:
+    """Polls `/health` until the server answers, the server dies, or we time out.
+
+    `is_alive`, when given, reports whether the spawned server is still running
+    (`None` when that cannot be determined). A server that has already exited is
+    never going to answer, so we stop waiting instead of burning the whole
+    timeout on a process that is gone.
+    """
     deadline = time.time() + total_timeout
     while time.time() < deadline:
         if probe_health(base_url):
             return True
+        if is_alive is not None and is_alive() is False:
+            # Re-probe once: the server may have come up and exited between the
+            # health probe above and this check.
+            return probe_health(base_url)
         time.sleep(interval)
     return False
 
@@ -136,6 +150,30 @@ def _stop_process(pid: int, name: str) -> None:
         pass
     except Exception as e:
         logger.warning(f"Failed to stop {name} (pid {pid}): {e}")
+
+
+def _server_is_alive(handle: "SpawnHandle") -> Optional[bool]:
+    """Whether the spawned server is still running; None when undeterminable."""
+    try:
+        if handle.cleanup_kind == "docker":
+            r = subprocess.run(
+                ["docker", "inspect", "-f", "{{.State.Running}}", handle.cleanup_id],
+                capture_output=True,
+                text=True,
+                timeout=15,
+            )
+            if r.returncode != 0:
+                # No such container: it exited and `--rm` already reaped it.
+                return False
+            return r.stdout.strip() == "true"
+        if handle.cleanup_kind == "process" and handle.pid:
+            os.kill(handle.pid, 0)
+            return True
+    except ProcessLookupError:
+        return False
+    except Exception:
+        return None
+    return None
 
 
 def _capture_server_logs(handle: "SpawnHandle", backend: str, tail: int = 100) -> str:
@@ -338,17 +376,27 @@ def attach_or_spawn(
 
         # 6. Wait for health
         health_url = health_url_for(port)
-        if not wait_for_health(health_url, total_timeout=startup_timeout):
+        if not wait_for_health(
+            health_url,
+            total_timeout=startup_timeout,
+            is_alive=lambda: _server_is_alive(spawn_handle),
+        ):
             # Grab the server's own logs *before* cleanup tears the (--rm)
             # container down, otherwise the actual failure reason is lost and
             # all the caller sees is this timeout.
+            died = _server_is_alive(spawn_handle) is False
             logs = _capture_server_logs(spawn_handle, backend)
             _cleanup()
-            raise SpawnError(
-                f"{backend} server failed to become healthy at {health_url} "
-                f"within {startup_timeout}s.\n"
-                f"--- last {backend} server logs ---\n{logs}"
-            )
+            if died:
+                reason = (
+                    f"{backend} server exited before becoming healthy at {health_url}."
+                )
+            else:
+                reason = (
+                    f"{backend} server failed to become healthy at {health_url} "
+                    f"within {startup_timeout}s."
+                )
+            raise SpawnError(f"{reason}\n--- last {backend} server logs ---\n{logs}")
 
         # 7. Verify model name
         running_model = probe_model_id(openai_url_for(port))
