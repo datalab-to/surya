@@ -93,7 +93,7 @@ class Settings(BaseSettings):
     BBOX_SCALE: int = 1000
 
     # vllm
-    VLLM_DOCKER_IMAGE: str = "vllm/vllm-openai:v0.20.1"
+    VLLM_DOCKER_IMAGE: str = "docker.io/vllm/vllm-openai:v0.20.1"
     VLLM_API_KEY: str = "EMPTY"
     VLLM_GPUS: str = "0"
     VLLM_GPU_TYPE: str = "4090"
