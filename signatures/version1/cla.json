@@ -255,6 +255,14 @@
       "created_at": "2026-07-23T07:29:15Z",
       "repoId": 741297064,
       "pullRequestNo": 539
+    },
+    {
+      "name": "yodatak",
+      "id": 704477,
+      "comment_id": 5339999159,
+      "created_at": "2026-08-19T09:10:20Z",
+      "repoId": 741297064,
+      "pullRequestNo": 550
     }
   ]
 }
