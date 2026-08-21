@@ -548,6 +548,17 @@ if run_ast_pipeline_btn:
             )
             st.json(ast_tree, expanded=False)
 
+            results_path = os.path.join(doc_dir, "results.json")
+            if os.path.exists(results_path):
+                with open(results_path, "r", encoding="utf-8") as f:
+                    results_text = f.read()
+                with st.expander("results.json (raw surya OCR output, pre-hierarchy)"):
+                    st.download_button(
+                        "Download results.json", results_text, file_name="results.json",
+                        mime="application/json", key="dl_results.json",
+                    )
+                    st.json(json.loads(results_text), expanded=False)
+
             for name in ("parameters.json", "references.json", "review_queue.json"):
                 p = os.path.join(doc_dir, name)
                 if os.path.exists(p):
