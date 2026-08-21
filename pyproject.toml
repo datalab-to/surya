@@ -28,6 +28,12 @@ dependencies = [
     "filelock>=3.16.0,<4",
     "beautifulsoup4>=4.12.0,<5",
     "requests>=2.28.0,<3",
+    # InternVL3 (figure captioning) remote-code dependencies.
+    "einops>=0.7.0,<1",
+    "timm>=1.0.0,<2",
+    "sentencepiece>=0.2.0,<1",
+    # Table export (build_ast.py tables -> Excel).
+    "openpyxl>=3.1.0,<4",
 ]
 
 [project.urls]
@@ -40,6 +46,8 @@ surya_layout = "surya.scripts.detect_layout:detect_layout_cli"
 surya_gui = "surya.scripts.run_streamlit_app:streamlit_app_cli"
 surya_table = "surya.scripts.table_recognition:table_recognition_cli"
 surya_screenshot = "surya.scripts.screenshot_app:main"
+dpr_process_pdf = "dpr_pipeline.process_pdf:main"
+dpr_process_batch = "dpr_pipeline.process_batch:main"
 
 [dependency-groups]
 dev = [
@@ -59,7 +67,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["surya"]
+packages = ["surya", "dpr_pipeline"]
 
 [tool.ruff]
 # rf-detr is vendored byte-for-byte from upstream (Roboflow); don't lint/format it.

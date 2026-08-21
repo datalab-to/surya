@@ -190,6 +190,21 @@ class Settings(BaseSettings):
     # (or 8). This is the server's batch ceiling regardless of per-request sizes.
     FAST_LAYOUT_SERVER_MAX_BATCH: Optional[int] = None
 
+    # ---- Figure captioning (InternVL3, CPU-only, in-process singleton) ------
+    # Describes non-text regions (Figure/Picture/Diagram/...) that surya's own
+    # VLM never runs OCR on. This is a separate, general-purpose vision-
+    # language model — surya's own VLM is fine-tuned only for layout/OCR/
+    # table-rec and can't do open-ended image description.
+    FIGURE_CAPTION_MODEL_CHECKPOINT: str = "OpenGVLab/InternVL3-1B-Instruct"
+    FIGURE_CAPTION_MAX_NEW_TOKENS: int = 512
+    # Tiles fed to the vision encoder (dynamic_preprocess's max_num). Higher =
+    # more detail on large/dense images but more compute; lowered from the
+    # model card's default of 12 since this runs CPU-only.
+    FIGURE_CAPTION_MAX_TILES: int = 6
+    FIGURE_CAPTION_INPUT_SIZE: int = 448
+    # None = torch's default thread count (all cores).
+    FIGURE_CAPTION_NUM_THREADS: Optional[int] = None
+
     # ---- Debug / draw fonts (label rendering on annotated images) ----------
     RECOGNITION_RENDER_FONTS: Dict[str, str] = {
         "all": os.path.join(FONT_DIR, "GoNotoCurrent-Regular.ttf"),
