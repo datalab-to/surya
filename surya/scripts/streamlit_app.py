@@ -4,6 +4,8 @@ inference manager. Detection + OCR-error stay in their own torch paths."""
 from __future__ import annotations
 
 import io
+import json
+import os
 import re
 import tempfile
 import time
@@ -14,6 +16,7 @@ import streamlit as st
 import streamlit.components.v1 as components
 from PIL import Image, ImageDraw
 
+from dpr_pipeline.process_pdf import process_pdf
 from surya.debug.draw import draw_polys_on_image, draw_bboxes_on_image
 from surya.detection import TextDetectionResult
 from surya.inference import SuryaInferenceManager
@@ -276,6 +279,17 @@ def ocr_errors(pdf_file, page_count, sample_len=512, max_samples=10, max_pages=1
     return label, results.labels
 
 
+def run_ast_pipeline(pdf_file, page_range_str: str | None):
+    """Save the uploaded file under its original name in a temp dir (so the
+    output folder is named after the real PDF, not a random temp name) and
+    run the same process_pdf.py pipeline as the CLI. Returns the ast_path."""
+    tmp_dir = tempfile.mkdtemp(prefix="surya_streamlit_")
+    pdf_path = os.path.join(tmp_dir, pdf_file.name)
+    with open(pdf_path, "wb") as f:
+        f.write(pdf_file.getvalue())
+    return process_pdf(pdf_path, output_dir="output", page_range=page_range_str)
+
+
 def open_pdf(pdf_file):
     stream = io.BytesIO(pdf_file.getvalue())
     return pypdfium2.PdfDocument(stream)
@@ -284,12 +298,7 @@ def open_pdf(pdf_file):
 @st.cache_data()
 def get_page_image(pdf_file, page_num, dpi=settings.IMAGE_DPI):
     doc = open_pdf(pdf_file)
-    renderer = doc.render(
-        pypdfium2.PdfBitmap.to_pil,
-        page_indices=[page_num - 1],
-        scale=dpi / 72,
-    )
-    png = list(renderer)[0]
+    png = doc[page_num - 1].render(scale=dpi / 72, draw_annots=False).to_pil()
     png_image = png.convert("RGB")
     doc.close()
     return png_image
@@ -351,6 +360,19 @@ run_layout = st.sidebar.button("Run Layout Analysis")
 run_table_rec = st.sidebar.button("Run Table Rec")
 run_block_ocr = st.sidebar.button("Run Block OCR")
 run_ocr_errors = st.sidebar.button("Run bad-PDF-text detection")
+
+st.sidebar.markdown("---")
+ast_full_doc = st.sidebar.checkbox(
+    "AST: full document (all pages)",
+    value=True,
+    help="Uncheck to run the AST pipeline on just the currently selected page — much faster to try out.",
+)
+run_ast_pipeline_btn = st.sidebar.button(
+    "Run Full AST Pipeline",
+    help="Runs the same process_pdf.py pipeline as the CLI: OCR -> section/subsection hierarchy "
+    "-> figure captions -> tables (CSV/Excel) -> review queue -> parameters -> cross-references. "
+    "Slow on CPU-only backends — this is the project's standard output format for any PDF.",
+)
 
 use_fast_layout = st.sidebar.checkbox(
     "Fast layout",
@@ -500,6 +522,53 @@ if run_ocr_errors:
         with col1:
             st.write(label)
             st.json(results)
+
+
+if run_ast_pipeline_btn:
+    if "pdf" not in filetype:
+        st.error("This feature only works with PDFs.")
+    else:
+        page_range_str = None if ast_full_doc else str(page_number - 1)
+        t = time.perf_counter()
+        with st.spinner(
+            "Running full AST pipeline (OCR, hierarchy, figure captions, tables, "
+            "parameters, references) — this can take a long time on CPU-only backends..."
+        ):
+            ast_path = run_ast_pipeline(in_file, page_range_str)
+        elapsed = time.perf_counter() - t
+        doc_dir = os.path.dirname(ast_path)
+
+        with col1:
+            _show_timing("AST pipeline — total", elapsed)
+            with open(ast_path, "r", encoding="utf-8") as f:
+                ast_text = f.read()
+            ast_tree = json.loads(ast_text)
+            st.download_button(
+                "Download ast.json", ast_text, file_name="ast.json", mime="application/json"
+            )
+            st.json(ast_tree, expanded=False)
+
+            for name in ("parameters.json", "references.json", "review_queue.json"):
+                p = os.path.join(doc_dir, name)
+                if os.path.exists(p):
+                    with open(p, "r", encoding="utf-8") as f:
+                        text = f.read()
+                    with st.expander(name):
+                        st.download_button(
+                            f"Download {name}", text, file_name=name, mime="application/json",
+                            key=f"dl_{name}",
+                        )
+                        st.json(json.loads(text), expanded=False)
+
+            tables_xlsx = os.path.join(doc_dir, "tables", "tables.xlsx")
+            if os.path.exists(tables_xlsx):
+                with open(tables_xlsx, "rb") as f:
+                    st.download_button(
+                        "Download tables.xlsx",
+                        f.read(),
+                        file_name="tables.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    )
 
 
 with col2:

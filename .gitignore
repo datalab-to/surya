@@ -10,6 +10,12 @@ results
 data
 slices
 
+# dpr_pipeline generated output (process_pdf.py / process_batch.py results,
+# and the OCR/figure-caption content-hash cache) — regenerated on demand,
+# not source.
+.surya_cache/
+output/
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
