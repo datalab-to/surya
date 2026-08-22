@@ -23,6 +23,8 @@ from surya.inference.schema import (
 )
 from surya.inference.util import detect_repeat_token, scale_to_fit
 from surya.logging import get_logger
+from surya.settings import settings
+from tqdm import tqdm
 
 logger = get_logger()
 
@@ -212,4 +214,11 @@ def chat_completions_batch(
         )
 
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        return list(executor.map(_process, batch))
+        return list(
+            tqdm(
+                executor.map(_process, batch),
+                total=len(batch),
+                desc="Recognizing Text",
+                disable=settings.DISABLE_TQDM,
+            )
+        )
