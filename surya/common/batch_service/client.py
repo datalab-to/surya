@@ -24,6 +24,12 @@ from surya.logging import get_logger
 logger = get_logger()
 
 
+def _server_root(base_url: str) -> str:
+    """Strip the OpenAI-style "/v1" suffix, leaving the server root."""
+    root = base_url.rstrip("/")
+    return root[: -len("/v1")] if root.endswith("/v1") else root
+
+
 class BatchServiceClient:
     def __init__(
         self,
@@ -96,7 +102,14 @@ class BatchServiceClient:
             )
             self._base_url = spawned.base_url
             self._http = httpx.Client(
-                base_url=self._base_url,
+                # `base_url` is the OpenAI-style endpoint, so it normally ends in
+                # "/v1" (see `_openai_url`, and the documented form of the pinned
+                # `<PREFIX>_SERVER_URL`). httpx *appends* a request path to the
+                # base path instead of replacing it, so posting "/v1/infer"
+                # against ".../v1" would go out as "/v1/v1/infer". Anchor the
+                # client at the server root so the documented "/v1/infer" route
+                # is what actually reaches the server.
+                base_url=_server_root(self._base_url),
                 # connect fails fast if the server is gone; reads can be long
                 # (large batches). No keep-alive: avoids reusing a stale socket to
                 # a server that has since died, which would hang instead of erroring.
