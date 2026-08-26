@@ -127,7 +127,7 @@ LAYOUT_JSON_SCHEMA = {
             "label": {"type": "string", "enum": LAYOUT_LABEL_SET},
             "bbox": {
                 "type": "string",
-                "pattern": r"^\d{1,4} \d{1,4} \d{1,4} \d{1,4}$",
+                "pattern": r"^[0-9]{1,4} [0-9]{1,4} [0-9]{1,4} [0-9]{1,4}$",
             },
             "count": {"type": "integer", "minimum": 0, "maximum": 10000},
         },
@@ -149,7 +149,7 @@ TABLE_REC_JSON_SCHEMA = {
             "label": {"type": "string", "enum": TABLE_REC_LABEL_SET},
             "bbox": {
                 "type": "string",
-                "pattern": r"^\d{1,4} \d{1,4} \d{1,4} \d{1,4}$",
+                "pattern": r"^[0-9]{1,4} [0-9]{1,4} [0-9]{1,4} [0-9]{1,4}$",
             },
         },
         "required": ["label", "bbox"],
