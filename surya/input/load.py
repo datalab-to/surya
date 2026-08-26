@@ -19,7 +19,10 @@ def load_pdf(pdf_path, page_range: List[int] | None = None, dpi=settings.IMAGE_D
     doc = open_pdf(pdf_path)
     last_page = len(doc)
 
-    if page_range:
+    if page_range is not None:
+        if len(page_range) == 0:
+            doc.close()
+            return [], []
         assert all([0 <= page < last_page for page in page_range]), (
             f"Invalid page range: {page_range}"
         )
