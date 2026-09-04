@@ -132,7 +132,7 @@ class VllmBackend(Backend):
                 spawned_by_us=spawned.spawned_by_us,
             )
             self._client = OpenAI(
-                api_key=settings.VLLM_API_KEY, base_url=self.handle.base_url
+                api_key=settings.SURYA_INFERENCE_API_KEY, base_url=self.handle.base_url
             )
             return self.handle
 
@@ -211,7 +211,7 @@ class VllmBackend(Backend):
             spawned_by_us=spawned.spawned_by_us,
         )
         self._client = OpenAI(
-            api_key=settings.VLLM_API_KEY,
+            api_key=settings.SURYA_INFERENCE_API_KEY,
             base_url=self.handle.base_url,
         )
         return self.handle
