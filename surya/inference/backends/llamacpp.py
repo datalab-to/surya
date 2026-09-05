@@ -97,7 +97,10 @@ class LlamaCppBackend(Backend):
                 model_name=spawned.model_name,
                 spawned_by_us=spawned.spawned_by_us,
             )
-            self._client = OpenAI(api_key="EMPTY", base_url=self.handle.base_url)
+            self._client = OpenAI(
+                api_key=settings.SURYA_INFERENCE_API_KEY,
+                base_url=self.handle.base_url,
+            )
             return self.handle
 
         binary = _resolve_llama_server_binary()
@@ -187,7 +190,7 @@ class LlamaCppBackend(Backend):
             spawned_by_us=spawned.spawned_by_us,
         )
         self._client = OpenAI(
-            api_key="EMPTY",
+            api_key=settings.SURYA_INFERENCE_API_KEY,
             base_url=self.handle.base_url,
         )
         return self.handle

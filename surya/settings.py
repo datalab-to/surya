@@ -3,7 +3,7 @@ from typing import Callable, Dict, Optional
 
 import torch
 from dotenv import find_dotenv
-from pydantic import computed_field
+from pydantic import computed_field, model_validator
 from pydantic_settings import BaseSettings
 from pathlib import Path
 from platformdirs import user_cache_dir
@@ -48,6 +48,7 @@ class Settings(BaseSettings):
     # Backend selection
     SURYA_INFERENCE_BACKEND: Optional[str] = None  # "vllm" | "llamacpp" | None (auto)
     SURYA_INFERENCE_URL: Optional[str] = None  # external server, skip spawn
+    SURYA_INFERENCE_API_KEY: Optional[str] = None
     SURYA_INFERENCE_AUTOSTART: bool = True
     # Leave an auto-spawned server running after the process exits so later
     # commands attach to it instead of re-spawning (avoids repeated startup /
@@ -94,7 +95,7 @@ class Settings(BaseSettings):
 
     # vllm
     VLLM_DOCKER_IMAGE: str = "vllm/vllm-openai:v0.20.1"
-    VLLM_API_KEY: str = "EMPTY"
+    VLLM_API_KEY: Optional[str] = None  # legacy alias for SURYA_INFERENCE_API_KEY
     VLLM_GPUS: str = "0"
     VLLM_GPU_TYPE: str = "4090"
     # bfloat16 needs an Ampere+ GPU (compute capability >= 8.0). On older cards
@@ -200,6 +201,13 @@ class Settings(BaseSettings):
     RECOGNITION_FONT_DL_BASE: str = (
         "https://github.com/satbyy/go-noto-universal/releases/download/v7.0"
     )
+
+    @model_validator(mode="after")
+    def _resolve_api_key(self):
+        # API key precedence: 1. SURYA_INFERENCE_API_KEY, 2. VLLM_API_KEY, 3. "EMPTY"
+        if not self.SURYA_INFERENCE_API_KEY:
+            self.SURYA_INFERENCE_API_KEY = self.VLLM_API_KEY or "EMPTY"
+        return self
 
     @computed_field
     def MODEL_DTYPE(self) -> torch.dtype:
