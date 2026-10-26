@@ -78,8 +78,12 @@ def _build_backend(method: str) -> Backend:
         from surya.inference.backends.llamacpp import LlamaCppBackend
 
         return LlamaCppBackend()
+    if method == "mlx":
+        from surya.inference.backends.mlx import MlxBackend
+
+        return MlxBackend()
     raise ValueError(
-        f"Unknown inference backend {method!r}. Supported: 'vllm', 'llamacpp'."
+        f"Unknown inference backend {method!r}. Supported: 'vllm', 'llamacpp', 'mlx'."
     )
 
 

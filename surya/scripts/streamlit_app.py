@@ -1,4 +1,4 @@
-"""Surya2 streamlit app — exercise layout, recognition, table_rec via the
+"""Surya streamlit app — exercise layout, recognition, table_rec via the
 inference manager. Detection + OCR-error stay in their own torch paths."""
 
 from __future__ import annotations
@@ -318,8 +318,8 @@ VLM-backed layout, OCR, and table recognition. The model runs in a local
 Modes:
 - **Layout**: page → list of blocks with label + bbox + token count
 - **Block OCR**: layout + per-block HTML
-- **Table Rec (simple)**: row + column bboxes only
 - **Table Rec (full)**: full HTML for each detected table
+- **Table Rec (simple)**: row + column bboxes only (Surya 2 checkpoints only)
 """
 )
 
@@ -359,9 +359,9 @@ use_fast_layout = st.sidebar.checkbox(
 )
 table_mode = st.sidebar.radio(
     "Table mode",
-    options=["simple", "full"],
+    options=["full", "simple"],
     index=0,
-    help="simple: rows+cols only. full: full HTML.",
+    help="full: table HTML. simple: rows+cols only (Surya 2 checkpoints only).",
 )
 skip_table_detection = st.sidebar.checkbox(
     "Skip table detection",

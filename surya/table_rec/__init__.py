@@ -119,6 +119,29 @@ class TableRecPredictor:
                 )
                 continue
 
+            if not elements:
+                # A model that does not know this task can answer it as another one (e.g. layout JSON);
+                # parse_table_rec drops non-Row/Col entries, so surface that as an error, not an empty table.
+                logger.warning(
+                    "Table rec output has no Row/Col entries, so this checkpoint likely does not support row/column "
+                    "table structure (Surya 2.5 does not). For row/column geometry run a Surya 2 checkpoint "
+                    "(SURYA_MODEL_CHECKPOINT=datalab-to/surya-ocr-2 with its own inference server); "
+                    "predict_full / --mode full still returns table HTML. "
+                    f"raw[:200]={out.raw[:200]!r}"
+                )
+                results.append(
+                    TableResult(
+                        rows=[],
+                        cols=[],
+                        cells=[],
+                        image_bbox=page_bbox,
+                        raw=out.raw,
+                        mode="simple",
+                        error=True,
+                    )
+                )
+                continue
+
             rows: List[TableRow] = []
             cols: List[TableCol] = []
             for el in elements:
@@ -211,7 +234,8 @@ class TableRecPredictor:
                     raw=out.raw,
                     html=html,
                     mode="full",
-                    error=False,
+                    error=getattr(out, "finish_reason", None)
+                    == "length",  # partial html is kept, flagged as an error
                 )
             )
         return results
