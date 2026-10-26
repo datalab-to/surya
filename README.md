@@ -27,7 +27,6 @@ Surya is a 689M param OCR model with these features:
 - Multilingual - scores 74.9% on an internal benchmark set of 91 languages (more [here](#multilingual))
 - Layout analysis (table, image, header, etc.) with reading order
 - Tables as HTML, with merged cells as colspan / rowspan (row and column geometry needs a Surya 2 checkpoint; see Limitations)
-- Optional MTP weights (`datalab-to/surya-ocr-2.5-mtp`) for faster serving with vLLM
 
 We also ship smaller models for line-level text detection and ocr error detection.  It works on a range of documents (see [usage](#usage) and [benchmarks](#benchmarks)).
 
@@ -177,7 +176,7 @@ The `results.json` file contains a dict keyed by input filename (no extension). 
 
 - Throughput is governed by the inference backend.  With `vllm`, raise `--max-num-seqs` / `--max-num-batched-tokens` (or `SURYA_INFERENCE_PARALLEL` on the client side) to keep more pages in flight. With `llama.cpp`, set `SURYA_INFERENCE_PARALLEL` to match `--parallel` on `llama-server`.
 - DPI can also impact throughput significantly - you can adjust the DPI settings to make the right throughput/accuracy tradeoff for your usecase.  Try going from 192 to 96 for improved throughput.
-- MTP can also impact latency/throughput. It is turned on automatically only when the checkpoint config declares an MTP head (the `surya-ocr-2.5-mtp` weights do; `surya-ocr-2.5` does not); set `VLLM_ENABLE_MTP=true|false` to override, and `VLLM_MTP_TOKENS` to change the draft length.
+- MTP can also impact latency/throughput. It is turned on automatically only when the checkpoint config declares an MTP head; set `VLLM_ENABLE_MTP=true|false` to override, and `VLLM_MTP_TOKENS` to change the draft length.
 
 ### From python
 
