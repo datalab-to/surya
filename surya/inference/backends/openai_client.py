@@ -23,6 +23,7 @@ from surya.inference.schema import (
 )
 from surya.inference.util import detect_repeat_token, scale_to_fit
 from surya.logging import get_logger
+from surya.settings import settings
 
 logger = get_logger()
 
@@ -67,6 +68,28 @@ def _mean_token_prob(logprobs_content) -> Optional[float]:
     return sum(probs) / len(probs)
 
 
+# With llama-server --special the end token is part of the returned text; keep it out of the last block.
+_END_MARKERS = ("<|im_end!>", "<|im_end|>", "<|endoftext|>")
+
+
+def _strip_end_marker(text: str) -> str:
+    stripped = text.rstrip()
+    for marker in _END_MARKERS:
+        if stripped.endswith(marker):
+            return stripped[: -len(marker)].rstrip()
+    return text
+
+
+def _parse_stop_token_ids(raw: Optional[str]) -> List[int]:
+    if not raw:
+        return []
+    try:
+        return [int(x) for x in raw.split(",") if x.strip()]
+    except ValueError:
+        logger.warning(f"Ignoring invalid SURYA_STOP_TOKEN_IDS={raw!r}")
+        return []
+
+
 def _generate_one(
     item: BatchInputItem,
     client,
@@ -76,6 +99,8 @@ def _generate_one(
     top_p: float,
     timeout: float,
     request_logprobs_default: bool,
+    allow_stop_token_ids: bool = True,
+    allow_guided_json: bool = True,
 ) -> GenerationResult:
     prompt = item.prompt or PROMPT_MAPPING[item.prompt_type]
     image = scale_to_fit(item.image)
@@ -96,10 +121,21 @@ def _generate_one(
     )
     if request_logprobs:
         kwargs["logprobs"] = True
+    if settings.SURYA_STOP_STRINGS:
+        kwargs["stop"] = [x for x in settings.SURYA_STOP_STRINGS.split(",") if x]
+    stop_ids = (
+        _parse_stop_token_ids(settings.SURYA_STOP_TOKEN_IDS)
+        if allow_stop_token_ids
+        else []
+    )
+    if (
+        stop_ids
+    ):  # vllm-only extension; llama.cpp ignores or rejects it, so leave it unset there
+        kwargs.setdefault("extra_body", {})["stop_token_ids"] = stop_ids
 
     # Structured output: prefer OpenAI-standard response_format (works on both
     # vllm and llama.cpp). Fall back to vllm's extra_body for guided_regex.
-    if item.guided_json is not None:
+    if item.guided_json is not None and allow_guided_json:
         kwargs["response_format"] = {
             "type": "json_schema",
             "json_schema": {
@@ -113,7 +149,7 @@ def _generate_one(
 
     try:
         completion = client.chat.completions.create(**kwargs)
-        raw = completion.choices[0].message.content or ""
+        raw = _strip_end_marker(completion.choices[0].message.content or "")
         token_count = completion.usage.completion_tokens if completion.usage else 0
         mean_p = None
         logprobs_content = None
@@ -134,6 +170,7 @@ def _generate_one(
             error=False,
             mean_token_prob=mean_p,
             logprobs=logprobs_content,
+            finish_reason=getattr(completion.choices[0], "finish_reason", None),
         )
     except Exception as e:
         logger.warning(f"Inference error: {e}")
@@ -166,6 +203,8 @@ def chat_completions_batch(
     max_workers: Optional[int] = None,
     max_retries: int = 3,
     request_logprobs_default: bool = True,
+    allow_stop_token_ids: bool = True,
+    allow_guided_json: bool = True,
 ) -> List[BatchOutputItem]:
     """Run a batch of items through the chat completions endpoint with concurrent workers."""
     if not batch:
@@ -183,6 +222,8 @@ def chat_completions_batch(
             top_p=top_p,
             timeout=timeout,
             request_logprobs_default=request_logprobs_default,
+            allow_stop_token_ids=allow_stop_token_ids,
+            allow_guided_json=allow_guided_json,
         )
         retries = 0
         while _should_retry(result, retries, max_retries):
@@ -200,6 +241,8 @@ def chat_completions_batch(
                 top_p=retry_top_p,
                 timeout=timeout,
                 request_logprobs_default=request_logprobs_default,
+                allow_stop_token_ids=allow_stop_token_ids,
+                allow_guided_json=allow_guided_json,
             )
             retries += 1
         return BatchOutputItem(
@@ -209,6 +252,7 @@ def chat_completions_batch(
             mean_token_prob=result.mean_token_prob,
             logprobs=result.logprobs,
             metadata=item.metadata,
+            finish_reason=result.finish_reason,
         )
 
     with ThreadPoolExecutor(max_workers=max_workers) as executor:

@@ -27,8 +27,8 @@ logger = get_logger()
 @click.option(
     "--mode",
     type=click.Choice(["simple", "full"]),
-    default="simple",
-    help="simple: rows+cols only (geometric cells). full: full HTML (BLOCK_PROMPT).",
+    default="full",
+    help="full: table HTML with colspan/rowspan. simple: rows+cols only (geometric cells; Surya 2 checkpoints only).",
 )
 def table_recognition_cli(
     input_path: str, skip_table_detection: bool, mode: str, **kwargs

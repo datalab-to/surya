@@ -60,6 +60,43 @@ def _gpu_settings(gpu: str) -> tuple[int, int]:
     return max_batched_tokens, max_num_seqs
 
 
+def _checkpoint_has_mtp_head(checkpoint: str) -> bool:
+    """True when the checkpoint's config declares an MTP head (Surya 2: num_nextn_predict_layers=1)."""
+    cfg = None
+    try:
+        from huggingface_hub import hf_hub_download
+
+        with open(hf_hub_download(checkpoint, "config.json")) as f:
+            cfg = json.load(f)
+    except Exception as e:  # offline or a local path: try a local config.json
+        local = os.path.join(checkpoint, "config.json")
+        try:
+            with open(local) as f:
+                cfg = json.load(f)
+        except Exception:
+            logger.warning(f"Could not read config for MTP auto-detect ({e}); MTP off")
+            return False
+    if not isinstance(cfg, dict):
+        return False
+    sub = cfg.get("text_config") if isinstance(cfg.get("text_config"), dict) else {}
+    for c in (cfg, sub):
+        for key in ("num_nextn_predict_layers", "mtp_num_hidden_layers"):
+            v = c.get(key)
+            if isinstance(v, int) and not isinstance(v, bool) and v > 0:
+                return True
+    return False
+
+
+def _mtp_enabled() -> bool:
+    if settings.VLLM_ENABLE_MTP is not None:
+        return settings.VLLM_ENABLE_MTP
+    has = _checkpoint_has_mtp_head(settings.SURYA_MODEL_CHECKPOINT)
+    logger.info(
+        f"VLLM_ENABLE_MTP auto: checkpoint {'has' if has else 'has no'} MTP head"
+    )
+    return has
+
+
 def _resolve_docker_binary() -> str:
     found = shutil.which("docker")
     if found:
@@ -179,7 +216,7 @@ class VllmBackend(Backend):
                 "--served-model-name",
                 settings.SURYA_MODEL_CHECKPOINT,
             ]
-            if settings.VLLM_ENABLE_MTP:
+            if _mtp_enabled():
                 spec_config = json.dumps(
                     {
                         "method": "mtp",
