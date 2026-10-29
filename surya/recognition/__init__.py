@@ -246,6 +246,9 @@ class RecognitionPredictor:
                     continue
                 html = clean_block_html(out.raw)
                 conf = out.mean_token_prob if out.mean_token_prob is not None else 1.0
+                capped = (
+                    getattr(out, "finish_reason", None) == "length"
+                )  # cut by the token cap: partial html, flagged
                 blocks.append(
                     BlockOCRResult(
                         polygon=box.polygon,
@@ -254,7 +257,7 @@ class RecognitionPredictor:
                         reading_order=box.position,
                         html=html,
                         skipped=False,
-                        error=False,
+                        error=capped,
                         confidence=conf,
                         raw_logprobs=out.logprobs,
                     )
@@ -287,6 +290,8 @@ class RecognitionPredictor:
             page_bbox = [0, 0, float(w), float(h)]
             if out is None or out.error:
                 return None
+            if getattr(out, "finish_reason", None) == "length":
+                return None  # cut by the token cap: never accept a partial page, go to regen / block fallback
             if not out.raw:
                 return (
                     PageOCRResult(blocks=[], image_bbox=page_bbox)
@@ -299,6 +304,16 @@ class RecognitionPredictor:
                 parsed = parse_full_page_html(out.raw)
             except Exception:
                 return None
+            if not parsed and not is_blank_region(img):
+                return None  # text on the page but nothing parsed (malformed header): regen / block fallback
+            if (
+                parsed
+                and parsed[-1].truncated
+                and getattr(out, "finish_reason", None) != "stop"
+            ):
+                return (
+                    None  # visibly cut off and the server did not report a clean stop
+                )
             confidence = out.mean_token_prob if out.mean_token_prob is not None else 1.0
             blocks: List[BlockOCRResult] = []
             for idx, item in enumerate(parsed):

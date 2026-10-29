@@ -155,6 +155,7 @@ class LlamaCppBackend(Backend):
                 "--alias",
                 settings.SURYA_MODEL_CHECKPOINT,
                 "--jinja",
+                "--special" if settings.LLAMA_CPP_SPECIAL else "",
             ]
             cmd = [c for c in cmd if c]
             for extra in (settings.LLAMA_CPP_EXTRA_ARGS or "").split():
@@ -212,4 +213,8 @@ class LlamaCppBackend(Backend):
             timeout=settings.SURYA_INFERENCE_TIMEOUT_SECONDS,
             max_workers=settings.SURYA_INFERENCE_PARALLEL or self.DEFAULT_PARALLEL,
             request_logprobs_default=settings.SURYA_INFERENCE_LOGPROBS,
+            allow_stop_token_ids=False,  # vllm-only request extension
+            # With --special the end token is part of the returned text, and llama-server's JSON-schema parser
+            # rejects trailing text with a 500, so layout runs unconstrained there (the model writes valid JSON anyway).
+            allow_guided_json=not settings.LLAMA_CPP_SPECIAL,
         )

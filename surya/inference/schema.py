@@ -37,6 +37,8 @@ class GenerationResult:
     mean_token_prob: Optional[float] = None
     # Per-token logprobs (raw OpenAI-style content list), if requested - phase 2 use
     logprobs: Optional[List[Any]] = None
+    # Server's finish_reason ("stop" | "length" | ...). "length" = the token cap cut the output.
+    finish_reason: Optional[str] = None
 
 
 @dataclass
@@ -47,3 +49,4 @@ class BatchOutputItem:
     mean_token_prob: Optional[float] = None
     logprobs: Optional[List[Any]] = None
     metadata: dict = field(default_factory=dict)
+    finish_reason: Optional[str] = None

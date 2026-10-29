@@ -37,16 +37,18 @@ class Settings(BaseSettings):
         return "cpu"
 
     # ---- Surya2 inference (VLM-backed: vllm | llamacpp) ---------------------
-    SURYA_MODEL_CHECKPOINT: str = "datalab-to/surya-ocr-2"
-    SURYA_GGUF_REPO: str = "datalab-to/surya-ocr-2-gguf"
-    SURYA_GGUF_MODEL_FILE: str = "surya-2.gguf"
-    SURYA_GGUF_MMPROJ_FILE: str = "surya-2-mmproj.gguf"
+    SURYA_MODEL_CHECKPOINT: str = "datalab-to/surya-ocr-2.5"
+    SURYA_GGUF_REPO: str = "datalab-to/surya-ocr-2.5-gguf"
+    SURYA_GGUF_MODEL_FILE: str = "surya-2.5.gguf"
+    SURYA_GGUF_MMPROJ_FILE: str = "surya-2.5-mmproj.gguf"
     # If set, used directly instead of HF download (handy for local-conversion testing)
     SURYA_GGUF_LOCAL_MODEL_PATH: Optional[str] = None
     SURYA_GGUF_LOCAL_MMPROJ_PATH: Optional[str] = None
 
     # Backend selection
-    SURYA_INFERENCE_BACKEND: Optional[str] = None  # "vllm" | "llamacpp" | None (auto)
+    SURYA_INFERENCE_BACKEND: Optional[str] = (
+        None  # "vllm" | "llamacpp" | "mlx" | None (auto: vllm on NVIDIA, else llamacpp)
+    )
     SURYA_INFERENCE_URL: Optional[str] = None  # external server, skip spawn
     SURYA_INFERENCE_AUTOSTART: bool = True
     # Leave an auto-spawned server running after the process exits so later
@@ -60,10 +62,11 @@ class Settings(BaseSettings):
     # capacity; llama.cpp uses a conservative slot count). Set an int to
     # override.
     SURYA_INFERENCE_PARALLEL: Optional[int] = None
-    # Per-parallel-slot KV-cache budget for the llama.cpp backend. Worst-case
-    # one OCR request: ~2k for image prefill + SURYA_MAX_TOKENS_FULL_PAGE
-    # (8192) generation + ~2k prompt/chat-template overhead ≈ 12k. Below this
-    # llama-server silently truncates outputs once a slot fills.
+    # Per-parallel-slot KV-cache budget for the llama.cpp backend. A typical letter page at
+    # IMAGE_DPI_HIGHRES=192 is ~4.4k visual tokens + ~2.4k output tokens, which fits, but the
+    # worst case (capped image ~8.0k + 12288 generation + prompt) is ~20.4k, which this default
+    # does NOT cover: llama-server silently truncates a request once its slot fills. Raising it
+    # multiplies KV memory by the number of parallel slots; tune per machine.
     SURYA_INFERENCE_CTX_PER_SLOT: int = 12288
     # Optional override for the *total* ctx passed to llama-server. When None
     # (default), total = max(16384, PARALLEL * CTX_PER_SLOT). Set this only
@@ -86,6 +89,12 @@ class Settings(BaseSettings):
     SURYA_MAX_TOKENS_BLOCK_CEILING: int = 8192
     SURYA_MAX_TOKENS_FULL_PAGE: int = 12288
 
+    # Optional stop handling forwarded on every request. Surya 2 stops on its end token
+    # (id 2). Character-level checkpoints can spell the end marker as text after
+    # punctuation, so the id never fires; set SURYA_STOP_STRINGS="<|im_end|>" for those.
+    SURYA_STOP_STRINGS: Optional[str] = None  # comma-separated
+    SURYA_STOP_TOKEN_IDS: Optional[str] = None  # comma-separated ints (vllm only)
+
     # Full-page OCR: progressive-temperature regeneration before block-mode fallback.
     # Off by default (single greedy pass -> block fallback); opt-in for benchmarking.
     SURYA_FULLPAGE_REGEN: bool = False
@@ -93,16 +102,21 @@ class Settings(BaseSettings):
     BBOX_SCALE: int = 1000
 
     # vllm
-    VLLM_DOCKER_IMAGE: str = "vllm/vllm-openai:v0.20.1"
+    VLLM_DOCKER_IMAGE: str = "vllm/vllm-openai:v0.25.1"
     VLLM_API_KEY: str = "EMPTY"
     VLLM_GPUS: str = "0"
     VLLM_GPU_TYPE: str = "4090"
     # bfloat16 needs an Ampere+ GPU (compute capability >= 8.0). On older cards
     # (e.g. T4 / Turing) vllm refuses to start with bf16 — set float16 there.
     VLLM_DTYPE: str = "bfloat16"
-    VLLM_MAX_MODEL_LEN: int = 18000
+    # Must hold the largest image the client sends (scale_to_fit caps at 3072x2048 px = ~8.0k visual
+    # tokens at 28 px per token side) + prompt + SURYA_MAX_TOKENS_FULL_PAGE (12288): ~20.4k. A lower
+    # value makes vllm reject large pages (A3 / tabloid) with a 400.
+    VLLM_MAX_MODEL_LEN: int = 24576
     VLLM_GPU_MEMORY_UTILIZATION: float = 0.85
-    VLLM_ENABLE_MTP: bool = True
+    # None = auto: enable MTP speculation only when the checkpoint ships an MTP head
+    # (Surya 2 does; a checkpoint without one fails or silently ignores the flag).
+    VLLM_ENABLE_MTP: Optional[bool] = None
     VLLM_MTP_TOKENS: int = 2
     VLLM_EXTRA_ARGS: Optional[str] = None
     DOCKER_HF_CACHE_PATH: str = "~/.cache/huggingface"
@@ -111,7 +125,14 @@ class Settings(BaseSettings):
     LLAMA_CPP_BINARY: str = "llama-server"
     LLAMA_CPP_NGL: int = 99  # all layers on GPU (Metal on macOS, CUDA on Linux GPU); harmless no-op on pure-CPU builds
     LLAMA_CPP_NO_MMPROJ_OFFLOAD: bool = False
+    # Return special tokens in the response text. Surya 2.5 writes block labels and coordinates as special tokens
+    # (<|Text|><|120|>...), which llama-server drops from the text by default; Surya 2 output is identical either way.
+    LLAMA_CPP_SPECIAL: bool = True
     LLAMA_CPP_EXTRA_ARGS: Optional[str] = None
+
+    # mlx (Apple Silicon): SURYA_INFERENCE_BACKEND=mlx spawns `mlx_vlm.server` for this MLX checkpoint (local dir or HF repo).
+    SURYA_MLX_MODEL: Optional[str] = None
+    MLX_VLM_EXTRA_ARGS: Optional[str] = None
 
     # ---- Detection (kept) ---------------------------------------------------
     DETECTOR_BATCH_SIZE: Optional[int] = None

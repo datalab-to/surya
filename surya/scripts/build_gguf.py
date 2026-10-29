@@ -133,10 +133,122 @@ CONVERTER_PATCHES = [
 ]
 
 
-def patch_converter(convert_py: Path) -> None:
+def extract_chktxt(convert_py_text: str) -> str:
+    """The probe string the converter hashes to recognise a BPE pre-tokenizer (a single-quoted literal on the
+    `chktxt = '...'` line of get_vocab_base_pre)."""
+    import ast
+
+    for line in convert_py_text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("chktxt = "):
+            return ast.literal_eval(stripped[len("chktxt = ") :])
+    raise RuntimeError(
+        "could not find chktxt in convert_hf_to_gguf.py; llama.cpp upstream may have drifted"
+    )
+
+
+def tokenizer_chkhsh(checkpoint_dir: Path, convert_py_text: str) -> str:
+    """sha256 of the token ids the converter's probe string encodes to: what get_vocab_base_pre compares against.
+    Char-level vocabularies change this hash whenever the vocabulary changes (Surya 2.5 added ~23k tokens)."""
+    from hashlib import sha256
+
+    from transformers import AutoTokenizer
+
+    tok = AutoTokenizer.from_pretrained(str(checkpoint_dir))
+    return sha256(str(tok.encode(extract_chktxt(convert_py_text))).encode()).hexdigest()
+
+
+def register_hash_patch(chkhsh: str, label: str) -> dict:
+    """A converter patch that maps `chkhsh` to the `default` pre-tokenizer (char-level WordLevel, Split regex='.')."""
+    return {
+        "name": f"register pre-tokenizer hash {chkhsh[:12]} ({label})",
+        "sentinel": f'"{chkhsh}"',
+        "anchor": _PATCH_REGISTER_HASH_ANCHOR,
+        "replacement": _PATCH_REGISTER_HASH_ANCHOR
+        + f"""        if chkhsh == "{chkhsh}":
+            # {label}
+            res = "default"
+""",
+    }
+
+
+_RENAMED_EOS = "<|im_end!>"
+
+
+def eos_spelling_report(tok, prompts: dict) -> dict:
+    """For each package prompt, True when `tok` does NOT emit the eos id for '<prompt><|im_end|>' (the marker is spelled).
+
+    Surya 2.5's vocabulary has multi-character units that end in '<' (for example '.<'). They swallow the first
+    character of '<|im_end|>' in the prompt, so HF / vLLM / MLX feed the model the spelled-out marker, which is
+    what the model was trained on. llama.cpp always parses '<|im_end|>' as the real special token instead, which
+    changes the prompt and makes the model spell most block labels (61 vs 1 over 8 test pages)."""
+    return {
+        name: tok.eos_token_id
+        not in tok.encode(f"{text}<|im_end|>", add_special_tokens=False)
+        for name, text in prompts.items()
+    }
+
+
+def decide_eos_rename(report: dict) -> bool:
+    """Rename only when EVERY package prompt is spelled; refuse a mixed result instead of guessing."""
+    spelled = [name for name, v in report.items() if v]
+    if not spelled:
+        return False
+    if len(spelled) == len(report):
+        return True
+    raise RuntimeError(
+        "the tokenizer spells <|im_end|> for some package prompts but not others "
+        f"(spelled: {sorted(spelled)}); a single eos rename would break the rest. Check the tokenizer."
+    )
+
+
+def check_rename_preconditions(checkpoint_dir: Path) -> None:
+    """The rename assumes a character-level WordLevel vocabulary with eos text '<|im_end|>' and a free replacement name."""
+    tok = json.loads((checkpoint_dir / "tokenizer.json").read_text())
+    if tok.get("model", {}).get("type") != "WordLevel":
+        raise RuntimeError("eos rename supports WordLevel tokenizers only")
+    cfg = json.loads((checkpoint_dir / "tokenizer_config.json").read_text())
+    eos = cfg.get("eos_token")
+    eos = eos.get("content") if isinstance(eos, dict) else eos
+    if eos != "<|im_end|>":
+        raise RuntimeError(f"expected eos_token '<|im_end|>', found {eos!r}")
+    names = set(tok.get("model", {}).get("vocab", {})) | {
+        a.get("content") for a in tok.get("added_tokens", [])
+    }
+    if _RENAMED_EOS in names:
+        raise RuntimeError(f"{_RENAMED_EOS!r} already exists in the vocabulary")
+
+
+def eos_spelled_by_hf(checkpoint_dir: Path) -> bool:
+    """Decide the eos rename for this checkpoint from its ORIGINAL tokenizer (what vLLM / MLX / transformers load)."""
+    from transformers import AutoTokenizer
+
+    from surya.inference.prompts import PROMPT_MAPPING
+
+    tok = AutoTokenizer.from_pretrained(str(checkpoint_dir))
+    rename = decide_eos_rename(eos_spelling_report(tok, PROMPT_MAPPING))
+    if rename:
+        check_rename_preconditions(checkpoint_dir)
+    return rename
+
+
+def rename_eos_patch() -> dict:
+    """Converter patch: write the eos token's text under a name that cannot occur in a prompt, so llama.cpp tokenizes
+    '<|im_end|>' as plain text exactly like HF does. The eos token id (tokenizer.ggml.eos_token_id) is unchanged."""
+    anchor = "        tokens = self._maybe_encode_gpt2_bytes(tokens, toktypes)\n"
+    return {
+        "name": "rename <|im_end|> token text (HF spells it in prompts)",
+        "sentinel": _RENAMED_EOS,
+        "anchor": anchor,
+        "replacement": anchor
+        + f'        tokens = ["{_RENAMED_EOS}" if t == "<|im_end|>" else t for t in tokens]\n',
+    }
+
+
+def patch_converter(convert_py: Path, extra_patches: list | None = None) -> None:
     text = convert_py.read_text()
     changed = False
-    for p in CONVERTER_PATCHES:
+    for p in CONVERTER_PATCHES + list(extra_patches or []):
         if p["sentinel"] in text:
             print(f"  [skip]  {p['name']} (already applied)")
             continue
@@ -180,6 +292,22 @@ def patch_checkpoint(src: Path, dst: Path) -> None:
 
 
 # ---- llama.cpp resolution -------------------------------------------------
+
+
+def reset_converter(repo_dir: Path) -> None:
+    """Restore the pristine convert_hf_to_gguf.py so patches from an earlier build (for example the eos rename for
+    another checkpoint) never carry over into this one. Only this file is touched."""
+    subprocess.check_call(
+        [
+            "git",
+            "-C",
+            str(repo_dir),
+            "checkout",
+            "--quiet",
+            "--",
+            "convert_hf_to_gguf.py",
+        ]
+    )
 
 
 def ensure_llama_cpp(repo_dir: Path, rev: str) -> Path:
@@ -265,9 +393,24 @@ def main() -> int:
     patch_checkpoint(src, work)
 
     repo = ensure_llama_cpp(args.llama_cpp_dir, args.llama_cpp_rev)
+    reset_converter(repo)  # this build's patches only
     convert_py = repo / "convert_hf_to_gguf.py"
     print("[patch] llama.cpp convert_hf_to_gguf.py")
-    patch_converter(convert_py)
+    chkhsh = tokenizer_chkhsh(work, convert_py.read_text())
+    print(f"  tokenizer chkhsh {chkhsh}")
+    extra = [
+        register_hash_patch(
+            chkhsh, f"char-level WordLevel tokenizer of {args.checkpoint}"
+        )
+    ]
+    # Judge the ORIGINAL checkpoint: that is what vLLM / MLX / transformers load and tokenize prompts with.
+    if eos_spelled_by_hf(src):
+        print(
+            "  HF spells '<|im_end|>' in prompts for this vocabulary: "
+            "renaming the eos token text for llama.cpp parity"
+        )
+        extra.append(rename_eos_patch())
+    patch_converter(convert_py, extra)
 
     out_llm = (args.out_dir / f"{args.name}.gguf").resolve()
     out_mmproj = (args.out_dir / f"{args.name}-mmproj.gguf").resolve()

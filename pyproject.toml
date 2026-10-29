@@ -1,6 +1,6 @@
 [project]
 name = "surya-ocr"
-version = "0.22.1"
+version = "0.23.0"
 description = "OCR, layout, reading order, and table recognition in 90+ languages."
 readme = "README.md"
 license = { text = "Apache-2.0" }

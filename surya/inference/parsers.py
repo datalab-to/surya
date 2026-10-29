@@ -110,6 +110,17 @@ def parse_table_rec(text: str) -> List[ParsedTableElement]:
 # ---- Block HTML (BLOCK_PROMPT for full table path / general block path) ---
 
 
+def _has_unclosed_cells(html: str) -> bool:
+    """True when td/th/tr opens outnumber their closers (compact models omit </td></th></tr>)."""
+
+    def n(pat):
+        return len(re.findall(pat, html, flags=re.I))
+
+    opens = n(r"<(?:td|th|tr)(?=[\s>/])")
+    closes = n(r"</(?:td|th|tr)\s*>")
+    return opens > closes
+
+
 def clean_block_html(html: str) -> str:
     """Light cleanup of model-emitted HTML for a single block.
 
@@ -118,6 +129,18 @@ def clean_block_html(html: str) -> str:
     can sanitize further if needed.
     """
     cleaned = _strip_fences(html).strip()
+    if "<|" in cleaned or _has_unclosed_cells(
+        cleaned
+    ):  # compact markers or omitted </td></th></tr> (Surya 2.5)
+        from surya.inference.compact import decode as _decode_compact
+
+        cleaned = _decode_compact(cleaned)
+    if (
+        "data-kind" in cleaned
+    ):  # merged cells as parent/ghost (Surya 2.5): convert to colspan / rowspan
+        from surya.inference.merged_cells import convert_merged_cells
+
+        cleaned = convert_merged_cells(cleaned)
     return cleaned
 
 
@@ -129,6 +152,40 @@ class ParsedFullPageBlock:
     label: str
     bbox: Tuple[float, float, float, float]  # 0-1000 normalized
     html: str  # inner HTML of the wrapping div
+    truncated: bool = False  # True when the block's tags are visibly unbalanced (output cut off by the token cap)
+
+
+_PARTIAL_COMPACT_HEADER_RE = re.compile(
+    r"<\|[A-Za-z-]+\|>(?:<\|\d{1,4}\|>){0,3}$|<\|[^<>|]*$"
+)
+_BALANCED_TAGS = (
+    "div",
+    "table",
+    "math",
+    "pre",
+    "code",
+    "p",
+    "h1",
+    "h2",
+    "h3",
+    "h4",
+    "h5",
+    "ul",
+    "ol",
+    "li",
+)
+
+
+def html_looks_truncated(html: str) -> bool:
+    """Heuristic only (the server's finish_reason is authoritative): an open structural tag with no closing tag,
+    a half-written tag, or a half-written compact block header at the end."""
+    for tag in _BALANCED_TAGS:
+        opens = len(re.findall(rf"<{tag}(?=[\s>/])", html, flags=re.I))
+        if opens > len(re.findall(rf"</{tag}\s*>", html, flags=re.I)):
+            return True
+    return bool(re.search(r"<[^<>]*$", html)) or bool(
+        _PARTIAL_COMPACT_HEADER_RE.search(html)
+    )
 
 
 def parse_full_page_html(text: str) -> List[ParsedFullPageBlock]:
@@ -137,6 +194,17 @@ def parse_full_page_html(text: str) -> List[ParsedFullPageBlock]:
     from bs4 import BeautifulSoup
 
     cleaned = _strip_fences(text).strip()
+    raw_partial_header = bool(_PARTIAL_COMPACT_HEADER_RE.search(cleaned))
+    if "<|" in cleaned:  # compact block headers (Surya 2.5): restore the div HTML first
+        from surya.inference.compact import decode as _decode_compact
+
+        cleaned = _decode_compact(cleaned)
+    if (
+        "data-kind" in cleaned
+    ):  # merged cells as parent/ghost (Surya 2.5): convert to colspan / rowspan
+        from surya.inference.merged_cells import convert_merged_cells
+
+        cleaned = convert_merged_cells(cleaned)
     if not cleaned:
         return []
     # The model outputs a sequence of top-level divs (no surrounding root).
@@ -169,6 +237,10 @@ def parse_full_page_html(text: str) -> List[ParsedFullPageBlock]:
                 html=inner,
             )
         )
+    if out and (
+        raw_partial_header or html_looks_truncated(cleaned)
+    ):  # BeautifulSoup balances tags, so judge the text we were given
+        out[-1].truncated = True
     return out
 
 
