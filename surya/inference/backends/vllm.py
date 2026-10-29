@@ -157,7 +157,7 @@ class VllmBackend(Backend):
                 "-v",
                 f"{hf_cache}:/root/.cache/huggingface",
                 "-p",
-                f"{port}:8000",
+                f"127.0.0.1:{port}:8000",
                 "--ipc=host",
                 settings.VLLM_DOCKER_IMAGE,
                 "--model",
