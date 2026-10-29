@@ -195,9 +195,15 @@ def resolve_model_dir(checkpoint: str) -> str:
     if checkpoint and os.path.isdir(checkpoint):
         return checkpoint
     if checkpoint and checkpoint.startswith("s3://"):
-        from surya.common.s3 import download_directory  # type: ignore
+        from surya.common.s3 import (  # type: ignore
+            S3DownloaderMixin,
+            download_directory,
+        )
 
-        return download_directory(checkpoint)
+        local_path = S3DownloaderMixin.get_local_path(checkpoint)
+        remote = checkpoint.replace(S3DownloaderMixin.s3_prefix, "")
+        download_directory(remote, local_path)
+        return local_path
     raise FileNotFoundError(
         f"fast-model checkpoint not found as a local dir: {checkpoint!r}"
     )
