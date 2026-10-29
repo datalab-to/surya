@@ -66,19 +66,27 @@ def wait_for_health(
     return False
 
 
-def probe_model_id(openai_base: str, timeout: float = 5.0) -> Optional[str]:
-    """Returns the model id reported by the running server, or None on failure."""
+def probe_model_ids(openai_base: str, timeout: float = 5.0) -> list[str]:
+    """Return all model ids reported by the running server.
+
+    An empty list means that the endpoint could not be queried or did not
+    report any usable model ids.
+    """
     try:
         with httpx.Client(timeout=timeout) as client:
             r = client.get(f"{openai_base}/models")
             r.raise_for_status()
             data = r.json()
             models = data.get("data") or []
-            if models:
-                return models[0].get("id")
+            return [
+                model_id
+                for model in models
+                if isinstance(model, dict)
+                and isinstance(model_id := model.get("id"), str)
+                and model_id
+            ]
     except Exception:
-        return None
-    return None
+        return []
 
 
 @dataclass
@@ -215,16 +223,17 @@ def attach_or_spawn(
                 f"SURYA_INFERENCE_URL={base_url} is not reachable at /health. "
                 "Start the server or unset the variable."
             )
-        model_name = probe_model_id(base_url) or expected_model_name
-        if model_name != expected_model_name:
+        model_ids = probe_model_ids(base_url)
+        if model_ids and expected_model_name not in model_ids:
             raise SpawnError(
-                f"Model mismatch at {base_url}: expected {expected_model_name!r}, got {model_name!r}. "
+                f"Model mismatch at {base_url}: expected {expected_model_name!r}, "
+                f"got {model_ids!r}. "
                 "Stop the running server or unset SURYA_INFERENCE_URL."
             )
         return SpawnedServer(
             base_url=base_url,
             health_url=health_url,
-            model_name=model_name,
+            model_name=expected_model_name,
             pid=None,
             backend=backend,
             spawned_by_us=False,
@@ -242,17 +251,17 @@ def attach_or_spawn(
         port = existing.get("port")
         pid = existing.get("pid")
         if port and probe_health(health_url_for(port)):
-            running_model = probe_model_id(openai_url_for(port)) or expected_model_name
-            if running_model != expected_model_name:
+            model_ids = probe_model_ids(openai_url_for(port))
+            if model_ids and expected_model_name not in model_ids:
                 raise SpawnError(
-                    f"Existing {backend} server on port {port} serves {running_model!r}, "
+                    f"Existing {backend} server on port {port} serves {model_ids!r}, "
                     f"expected {expected_model_name!r}. Stop it before continuing."
                 )
             logger.info(f"Attaching to existing {backend} server on port {port}")
             return SpawnedServer(
                 base_url=openai_url_for(port),
                 health_url=health_url_for(port),
-                model_name=running_model,
+                model_name=expected_model_name,
                 pid=pid,
                 backend=backend,
                 spawned_by_us=False,
@@ -279,18 +288,16 @@ def attach_or_spawn(
         if existing:
             port = existing.get("port")
             if port and probe_health(health_url_for(port)):
-                running_model = (
-                    probe_model_id(openai_url_for(port)) or expected_model_name
-                )
-                if running_model != expected_model_name:
+                model_ids = probe_model_ids(openai_url_for(port))
+                if model_ids and expected_model_name not in model_ids:
                     raise SpawnError(
-                        f"Existing {backend} server on port {port} serves {running_model!r}, "
+                        f"Existing {backend} server on port {port} serves {model_ids!r}, "
                         f"expected {expected_model_name!r}."
                     )
                 return SpawnedServer(
                     base_url=openai_url_for(port),
                     health_url=health_url_for(port),
-                    model_name=running_model,
+                    model_name=expected_model_name,
                     pid=existing.get("pid"),
                     backend=backend,
                     spawned_by_us=False,
@@ -351,21 +358,20 @@ def attach_or_spawn(
             )
 
         # 7. Verify model name
-        running_model = probe_model_id(openai_url_for(port))
-        if running_model and running_model != expected_model_name:
+        model_ids = probe_model_ids(openai_url_for(port))
+        running_model = expected_model_name
+        if model_ids and expected_model_name not in model_ids:
+            running_model = model_ids[0]
             logger.warning(
-                f"{backend} server reports model={running_model!r} "
-                f"but expected {expected_model_name!r}; using reported name."
+                f"{backend} server reports models={model_ids!r} "
+                f"but expected {expected_model_name!r}; using {running_model!r}."
             )
-            expected_model_name = running_model
 
-        logger.info(
-            f"{backend} server ready on port {port} (model={expected_model_name})"
-        )
+        logger.info(f"{backend} server ready on port {port} (model={running_model})")
         return SpawnedServer(
             base_url=openai_url_for(port),
             health_url=health_url,
-            model_name=expected_model_name,
+            model_name=running_model,
             pid=spawn_handle.pid,
             backend=backend,
             spawned_by_us=True,
