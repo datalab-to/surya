@@ -86,7 +86,7 @@ pip install surya-ocr
 
 Surya auto-spawns the server on first use, and you need `vllm` (NVIDIA GPU) or `llama.cpp` (CPU / Apple Silicon):
 
-- **NVIDIA GPU:** [Docker](https://docs.docker.com/get-docker/) plus the [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html).
+- **NVIDIA GPU:** [Docker](https://docs.docker.com/get-docker/) or [Podman](https://podman.io/docs/installation) plus the [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html). Surya uses `docker` when it is on `PATH` and falls back to `podman`; set `SURYA_CONTAINER_RUNTIME=podman` (or `docker`) to pick one. Podman reaches the GPU through [CDI](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/cdi-support.html), so generate the spec once with `sudo nvidia-ctk cdi generate --output=/etc/cdi/nvidia.yaml`.
 - **CPU / Apple Silicon:** the `llama-server` binary from llama.cpp:
   ```shell
   brew install llama.cpp     # macOS
@@ -132,8 +132,8 @@ surya_table  DATA_PATH                 # ...and so on, no re-spawn
 ```
 
 `--keep_server` works on every command. Stop the server when you're done
-(`docker stop` the `surya-vllm-*` container, or kill the `llama-server`
-process), or set `SURYA_INFERENCE_KEEP_ALIVE=1` to make keep-alive the default.
+(`docker stop` / `podman stop` the `surya-vllm-*` container, or kill the
+`llama-server` process), or set `SURYA_INFERENCE_KEEP_ALIVE=1` to make keep-alive the default.
 
 ## Interactive App
 
@@ -363,12 +363,14 @@ export SURYA_INFERENCE_URL=http://localhost:8000/v1
 | `SURYA_GUIDED_LAYOUT`             | true                              | JSON-schema-constrained layout decode                 |
 | `VLLM_MAX_MODEL_LEN`              | 24576                             | Must hold the largest image (~8k tokens) + prompt + `SURYA_MAX_TOKENS_FULL_PAGE` (12288) |
 | `VLLM_ENABLE_MTP`                 | auto                              | Auto = on only if the checkpoint config declares an MTP head |
+| `SURYA_CONTAINER_RUNTIME`         | auto (docker, else podman)        | Container runtime for the vllm image: `docker` \| `podman` \| path to the binary |
+| `VLLM_GPUS`                       | `0`                               | GPUs for the vllm container, comma-separated ids or `all` (docker `--gpus device=...`; podman `--device nvidia.com/gpu=...`) |
 | `SURYA_MLX_MODEL`                 | (none)                            | MLX checkpoint (local dir or HF repo) for `SURYA_INFERENCE_BACKEND=mlx` |
 | `SURYA_STOP_STRINGS`              | (none)                            | Comma-separated stop strings sent with every request (e.g. `<\|im_end\|>` for checkpoints whose end marker is spelled as text) |
 | `SURYA_STOP_TOKEN_IDS`            | (none)                            | Comma-separated stop token ids (vllm only; ignored by llama.cpp) |
 | `LLAMA_CPP_SPECIAL`               | true                              | Pass `--special` to llama-server so block labels and coordinates (special tokens in Surya 2.5 output) are returned in the text |
 
-Install `surya-ocr` and `vllm` in separate environments (the default backend runs vllm in Docker for this reason): `surya-ocr` pins `opencv-python-headless==4.11.0.86`, while vllm 0.25 requires `>=4.13`, so `pip check` reports a conflict if both share one environment.
+Install `surya-ocr` and `vllm` in separate environments (the default backend runs vllm in a container for this reason): `surya-ocr` pins `opencv-python-headless==4.11.0.86`, while vllm 0.25 requires `>=4.13`, so `pip check` reports a conflict if both share one environment.
 
 ## MLX backend (Apple Silicon)
 

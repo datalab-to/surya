@@ -142,13 +142,14 @@ def _capture_server_logs(handle: "SpawnHandle", backend: str, tail: int = 100) -
     """Best-effort tail of a server's logs, for surfacing startup failures."""
     try:
         if handle.cleanup_kind == "docker":
+            runtime = handle.runtime or "docker"
             r = subprocess.run(
-                ["docker", "logs", "--tail", str(tail), handle.cleanup_id],
+                [runtime, "logs", "--tail", str(tail), handle.cleanup_id],
                 capture_output=True,
                 text=True,
                 timeout=15,
             )
-            return (r.stdout or "") + (r.stderr or "") or "(no docker logs)"
+            return (r.stdout or "") + (r.stderr or "") or "(no container logs)"
         # Process backends log to ~/.cache/datalab/surya/<backend>_server.log
         # (llamacpp and every batch-service server follow this convention).
         log_path = Path(f"~/.cache/datalab/surya/{backend}_server.log").expanduser()
@@ -161,14 +162,17 @@ def _capture_server_logs(handle: "SpawnHandle", backend: str, tail: int = 100) -
     return "(no logs available)"
 
 
-def _stop_docker_container(name: str) -> None:
+def _stop_docker_container(name: str, runtime: Optional[str] = None) -> None:
+    """Stop a container spawned by us. `runtime` is the docker/podman binary that
+    started it (both accept `<runtime> stop <name>`); None means `docker`."""
+    runtime = runtime or "docker"
     try:
         subprocess.run(
-            ["docker", "stop", name], check=False, capture_output=True, timeout=30
+            [runtime, "stop", name], check=False, capture_output=True, timeout=30
         )
-        logger.info(f"Stopped docker container {name}")
+        logger.info(f"Stopped {runtime} container {name}")
     except Exception as e:
-        logger.warning(f"Failed to stop docker container {name}: {e}")
+        logger.warning(f"Failed to stop {runtime} container {name}: {e}")
 
 
 _UNSET = object()
@@ -190,7 +194,9 @@ def attach_or_spawn(
     """Generic attach-or-spawn with file lock and sentinel.
 
     `spawn_fn(port)` must launch the server detached and return a SpawnHandle
-    with `pid` (int or None for docker) and a `cleanup_id` (e.g. container name).
+    with `pid` (int or None for a container) and a `cleanup_id` (e.g. container
+    name). Container handles may also carry the `runtime` binary (docker/podman)
+    so cleanup and log capture go through the same tool that started it.
 
     The `external_url`/`autostart`/`fixed_port`/`keep_alive` overrides let a
     non-VLM caller (e.g. the fast-layout server) drive this off its own settings.
@@ -311,6 +317,7 @@ def attach_or_spawn(
                 "backend": backend,
                 "cleanup_id": spawn_handle.cleanup_id,
                 "cleanup_kind": spawn_handle.cleanup_kind,
+                "runtime": spawn_handle.runtime,
             },
         )
 
@@ -321,7 +328,9 @@ def attach_or_spawn(
         def _cleanup():
             try:
                 if spawn_handle.cleanup_kind == "docker":
-                    _stop_docker_container(spawn_handle.cleanup_id)
+                    _stop_docker_container(
+                        spawn_handle.cleanup_id, spawn_handle.runtime
+                    )
                 elif spawn_handle.cleanup_kind == "process":
                     if spawn_handle.pid:
                         _stop_process(spawn_handle.pid, backend)
@@ -376,4 +385,7 @@ def attach_or_spawn(
 class SpawnHandle:
     pid: Optional[int]
     cleanup_id: str  # container name for docker, str(pid) for process
-    cleanup_kind: str  # "docker" | "process"
+    cleanup_kind: str  # "docker" (any container runtime) | "process"
+    # Binary that started the container ("docker", "podman" or a path to one).
+    # None means docker; ignored for cleanup_kind == "process".
+    runtime: Optional[str] = None

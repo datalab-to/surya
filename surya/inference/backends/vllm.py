@@ -1,4 +1,4 @@
-"""vllm backend: spawns the vllm/vllm-openai docker image with MTP=2."""
+"""vllm backend: spawns the vllm/vllm-openai image (docker or podman) with MTP=2."""
 
 from __future__ import annotations
 
@@ -97,14 +97,79 @@ def _mtp_enabled() -> bool:
     return has
 
 
-def _resolve_docker_binary() -> str:
-    found = shutil.which("docker")
-    if found:
-        return found
+CONTAINER_RUNTIMES = ("docker", "podman")
+
+
+def _runtime_kind(binary: str) -> str:
+    """Classify a container binary as "docker" or "podman".
+
+    Asks the binary itself first: the `podman-docker` package installs a `docker`
+    shim that is really podman, and it must get podman's GPU flags (docker's
+    `--runtime nvidia` makes podman fail). Falls back to the file name when the
+    binary cannot be run.
+    """
+    try:
+        r = subprocess.run(
+            [binary, "--version"], capture_output=True, text=True, timeout=10
+        )
+        banner = ((r.stdout or "") + (r.stderr or "")).lower()
+        if "podman" in banner:
+            return "podman"
+        if "docker" in banner:
+            return "docker"
+    except Exception:
+        pass
+    return "podman" if "podman" in os.path.basename(binary).lower() else "docker"
+
+
+def _resolve_container_runtime() -> tuple[str, str]:
+    """Return (binary, kind) for the container runtime that will run the vllm image.
+
+    SURYA_CONTAINER_RUNTIME pins the binary ("docker", "podman" or a path); unset
+    means auto: docker if present, otherwise podman.
+    """
+    configured = settings.SURYA_CONTAINER_RUNTIME
+    if configured:
+        found = shutil.which(configured)
+        if not found:
+            raise SpawnError(
+                f"SURYA_CONTAINER_RUNTIME={configured!r} was not found on PATH. "
+                f"Set it to one of {', '.join(CONTAINER_RUNTIMES)} or a path to the binary."
+            )
+        return found, _runtime_kind(found)
+    for name in CONTAINER_RUNTIMES:
+        found = shutil.which(name)
+        if found:
+            return found, _runtime_kind(found)
     raise SpawnError(
-        "docker binary not found. Install Docker (https://docs.docker.com/get-docker/) "
-        "and ensure the daemon is running."
+        "No container runtime found. Install Docker (https://docs.docker.com/get-docker/) "
+        "or Podman (https://podman.io/docs/installation) with the NVIDIA Container "
+        "Toolkit, and ensure it is on PATH (or set SURYA_CONTAINER_RUNTIME)."
     )
+
+
+def _gpu_args(kind: str, gpus: str) -> List[str]:
+    """Container flags that expose the GPUs in `gpus` (comma-separated ids or "all").
+
+    docker: the NVIDIA runtime plus `--gpus device=...`.
+    podman: CDI devices (`--device nvidia.com/gpu=<id>`), one flag per GPU, and
+    `--security-opt=label=disable` so the device nodes stay reachable on SELinux
+    hosts (as in the NVIDIA Container Toolkit CDI docs). Podman has no `nvidia`
+    OCI runtime and rejects `--runtime nvidia`.
+    """
+    gpus = (gpus or "").strip() or "0"
+    if kind == "podman":
+        ids = (
+            ["all"]
+            if gpus.lower() == "all"
+            else [g.strip() for g in gpus.split(",") if g.strip()]
+        )
+        args: List[str] = []
+        for gpu in ids:
+            args.extend(["--device", f"nvidia.com/gpu={gpu}"])
+        args.append("--security-opt=label=disable")
+        return args
+    return ["--runtime", "nvidia", "--gpus", f"device={gpus}"]
 
 
 def _health_url(port: int) -> str:
@@ -151,7 +216,7 @@ class VllmBackend(Backend):
         except SpawnError:
             pass
 
-        # If user pinned an external server, attach without spawning docker.
+        # If user pinned an external server, attach without spawning a container.
         if settings.SURYA_INFERENCE_URL:
             spawned = attach_or_spawn(
                 backend=self.name,
@@ -173,7 +238,7 @@ class VllmBackend(Backend):
             )
             return self.handle
 
-        docker = _resolve_docker_binary()
+        runtime, runtime_kind = _resolve_container_runtime()
         max_batched_tokens, max_num_seqs = _gpu_settings(settings.VLLM_GPU_TYPE)
         self._max_num_seqs = max_num_seqs
 
@@ -181,16 +246,13 @@ class VllmBackend(Backend):
             container_name = f"surya-vllm-{port}"
             hf_cache = os.path.expanduser(settings.DOCKER_HF_CACHE_PATH)
             cmd = [
-                docker,
+                runtime,
                 "run",
                 "--rm",
                 "-d",
                 "--name",
                 container_name,
-                "--runtime",
-                "nvidia",
-                "--gpus",
-                f"device={settings.VLLM_GPUS}",
+                *_gpu_args(runtime_kind, settings.VLLM_GPUS),
                 "-v",
                 f"{hf_cache}:/root/.cache/huggingface",
                 "-p",
@@ -229,9 +291,14 @@ class VllmBackend(Backend):
             logger.info(f"Spawning: {' '.join(cmd)}")
             result = subprocess.run(cmd, capture_output=True, text=True, check=False)
             if result.returncode != 0:
-                raise SpawnError(f"docker run failed: {result.stderr or result.stdout}")
+                raise SpawnError(
+                    f"{runtime_kind} run failed: {result.stderr or result.stdout}"
+                )
             return SpawnHandle(
-                pid=None, cleanup_id=container_name, cleanup_kind="docker"
+                pid=None,
+                cleanup_id=container_name,
+                cleanup_kind="docker",
+                runtime=runtime,
             )
 
         spawned = attach_or_spawn(

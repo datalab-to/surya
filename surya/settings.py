@@ -103,6 +103,12 @@ class Settings(BaseSettings):
 
     # vllm
     VLLM_DOCKER_IMAGE: str = "vllm/vllm-openai:v0.25.1"
+    # Container runtime used to run VLLM_DOCKER_IMAGE. None = auto: `docker` if it is on
+    # PATH, otherwise `podman`. Set to "docker", "podman" or a path to either binary.
+    # Podman gets the GPU through CDI (`--device nvidia.com/gpu=...`) instead of
+    # docker's `--runtime nvidia --gpus ...`; generate the CDI spec once with
+    # `sudo nvidia-ctk cdi generate --output=/etc/cdi/nvidia.yaml`.
+    SURYA_CONTAINER_RUNTIME: Optional[str] = None
     VLLM_API_KEY: str = "EMPTY"
     VLLM_GPUS: str = "0"
     VLLM_GPU_TYPE: str = "4090"
