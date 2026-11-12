@@ -22,6 +22,7 @@ from surya.inference.backends.openai_client import chat_completions_batch
 from surya.inference.backends.spawn import (
     SpawnError,
     SpawnHandle,
+    _cache_dir,
     attach_or_spawn,
     probe_health,
     probe_model_id,
@@ -118,8 +119,7 @@ class MlxBackend(Backend):
             ]
             cmd += shlex.split(settings.MLX_VLM_EXTRA_ARGS or "")
             logger.info(f"Spawning: {' '.join(cmd)}")
-            log_path = Path("~/.cache/datalab/surya/mlx_server.log").expanduser()
-            log_path.parent.mkdir(parents=True, exist_ok=True)
+            log_path = _cache_dir() / "mlx_server.log"
             with open(
                 log_path, "ab"
             ) as log_fp:  # the child keeps its own copy of the descriptor
@@ -145,15 +145,27 @@ class MlxBackend(Backend):
             base_url=spawned.base_url,
             model_name=spawned.model_name,
             spawned_by_us=spawned.spawned_by_us,
+            cleanup_fn=getattr(spawned, "cleanup_fn", None),
         )
-        self._client = OpenAI(api_key="EMPTY", base_url=self.handle.base_url)
+        self._client = OpenAI(
+            api_key=settings.SURYA_INFERENCE_API_KEY, base_url=self.handle.base_url
+        )
         return self.handle
 
     def capacity(self) -> int:
         return settings.SURYA_INFERENCE_PARALLEL or self.DEFAULT_PARALLEL
 
     def stop(self) -> None:
-        # atexit handler in spawn.py owns cleanup; nothing to do here.
+        if self._client is not None:
+            try:
+                self._client.close()
+            except Exception:
+                pass
+        if self.handle is not None and self.handle.cleanup_fn is not None:
+            try:
+                self.handle.cleanup_fn()
+            except Exception:
+                pass
         self.handle = None
         self._client = None
 

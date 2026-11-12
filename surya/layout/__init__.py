@@ -49,6 +49,16 @@ class LayoutPredictor:
         input image's size. Useful when layout runs on a low-DPI render but
         you want bboxes in the OCR image's coordinate space.
         """
+        if not isinstance(images, (list, tuple)):
+            raise TypeError(
+                f"Expected a list of PIL.Image.Image objects, got {type(images).__name__}."
+            )
+        for idx, img in enumerate(images):
+            if not isinstance(img, Image.Image):
+                raise TypeError(
+                    f"Expected PIL.Image.Image at index {idx}, got {type(img).__name__}. "
+                    "Load files into PIL images first (e.g. with surya.input.load.load_from_file or PIL.Image.open)."
+                )
         if not images:
             return []
         manager = self.manager or get_default_manager()

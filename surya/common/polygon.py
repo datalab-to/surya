@@ -33,8 +33,14 @@ class PolygonBox(BaseModel):
             if value.shape == (4, 2):
                 return value.tolist()
 
+        first_type = (
+            type(value[0])
+            if isinstance(value, (list, tuple)) and len(value) > 0
+            else None
+        )
         raise ValueError(
-            f"Input must be either a bbox [x_min, y_min, x_max, y_max] or a polygon with 4 corners [(x,y), (x,y), (x,y), (x,y)].  All values must be numeric. You passed {value} of type {type(value)}.  The first value is of type {type(value[0])}."
+            f"Input must be either a bbox [x_min, y_min, x_max, y_max] or a polygon with 4 corners [(x,y), (x,y), (x,y), (x,y)]. "
+            f"All values must be numeric. You passed {value!r} of type {type(value)} (first element type: {first_type})."
         )
 
     @property

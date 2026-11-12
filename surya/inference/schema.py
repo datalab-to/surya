@@ -6,7 +6,6 @@ from PIL import Image
 
 PROMPT_TYPE_LAYOUT = "layout"
 PROMPT_TYPE_BLOCK = "block"
-PROMPT_TYPE_TABLE_REC = "table_rec"
 PROMPT_TYPE_HIGH_ACCURACY_BBOX = "high_accuracy_bbox"
 
 

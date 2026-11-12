@@ -1,10 +1,7 @@
-"""TableRecPredictor: dual-path table structure recognition.
+"""TableRecPredictor: HTML table structure and content recognition.
 
-- predict_simple: TABLE_REC_PROMPT → rows + columns only, cells derived
-  geometrically (row × column intersections).
-- predict_full: BLOCK_PROMPT on the table crop → full <table> HTML with
-  colspan / rowspan / <th>. The HTML lives on TableResult.html for marker to
-  consume directly.
+Runs `BLOCK_PROMPT` on table crops and returns `TableResult` with full `<table>`
+HTML (`colspan`, `rowspan`, `<th>`, `<td>`).
 """
 
 from __future__ import annotations
@@ -14,34 +11,15 @@ from typing import List, Optional
 from PIL import Image
 
 from surya.inference import SuryaInferenceManager, get_default_manager
-from surya.inference.parsers import clean_block_html, denorm_bbox, parse_table_rec
-from surya.inference.prompts import (
-    PROMPT_TYPE_BLOCK,
-    PROMPT_TYPE_TABLE_REC,
-    TABLE_REC_JSON_SCHEMA,
-)
+from surya.inference.parsers import clean_block_html
+from surya.inference.prompts import PROMPT_TYPE_BLOCK
 from surya.inference.schema import BatchInputItem
 from surya.inference.util import image_token_budget
 from surya.logging import get_logger
 from surya.settings import settings
-from surya.table_rec.schema import TableCell, TableCol, TableResult, TableRow
+from surya.table_rec.schema import TableResult
 
 logger = get_logger()
-
-
-def _polygon_from_bbox(bbox):
-    x0, y0, x1, y1 = bbox
-    return [[x0, y0], [x1, y0], [x1, y1], [x0, y1]]
-
-
-def _intersect_bbox(a, b):
-    x0 = max(a[0], b[0])
-    y0 = max(a[1], b[1])
-    x1 = min(a[2], b[2])
-    y1 = min(a[3], b[3])
-    if x1 <= x0 or y1 <= y0:
-        return None
-    return (x0, y0, x1, y1)
 
 
 class TableRecPredictor:
@@ -61,151 +39,43 @@ class TableRecPredictor:
         return
 
     def __call__(
-        self, images: List[Image.Image], mode: str = "simple"
+        self,
+        images: List[Image.Image],
+        counts: Optional[List[int]] = None,
     ) -> List[TableResult]:
-        if mode == "full":
-            return self.predict_full(images)
-        return self.predict_simple(images)
-
-    def predict_simple(self, images: List[Image.Image]) -> List[TableResult]:
-        if not images:
-            return []
-        manager = self.manager or get_default_manager()
-        guided = TABLE_REC_JSON_SCHEMA if settings.SURYA_GUIDED_TABLE_REC else None
-        batch = [
-            BatchInputItem(
-                image=img,
-                prompt_type=PROMPT_TYPE_TABLE_REC,
-                max_tokens=settings.SURYA_MAX_TOKENS_TABLE_REC,
-                guided_json=guided,
-            )
-            for img in images
-        ]
-        outputs = manager.generate(batch)
-
-        results: List[TableResult] = []
-        for img, out in zip(images, outputs):
-            w, h = img.size
-            page_bbox = [0, 0, float(w), float(h)]
-            if out.error or not out.raw:
-                results.append(
-                    TableResult(
-                        rows=[],
-                        cols=[],
-                        cells=[],
-                        image_bbox=page_bbox,
-                        raw=out.raw,
-                        mode="simple",
-                        error=True,
-                    )
-                )
-                continue
-            try:
-                elements = parse_table_rec(out.raw)
-            except Exception as e:
-                logger.warning(
-                    f"Table rec parse failed: {e}; raw[:200]={out.raw[:200]!r}"
-                )
-                results.append(
-                    TableResult(
-                        rows=[],
-                        cols=[],
-                        cells=[],
-                        image_bbox=page_bbox,
-                        raw=out.raw,
-                        mode="simple",
-                        error=True,
-                    )
-                )
-                continue
-
-            if not elements:
-                # A model that does not know this task can answer it as another one (e.g. layout JSON);
-                # parse_table_rec drops non-Row/Col entries, so surface that as an error, not an empty table.
-                logger.warning(
-                    "Table rec output has no Row/Col entries, so this checkpoint likely does not support row/column "
-                    "table structure (Surya 2.5 does not). For row/column geometry run a Surya 2 checkpoint "
-                    "(SURYA_MODEL_CHECKPOINT=datalab-to/surya-ocr-2 with its own inference server); "
-                    "predict_full / --mode full still returns table HTML. "
-                    f"raw[:200]={out.raw[:200]!r}"
-                )
-                results.append(
-                    TableResult(
-                        rows=[],
-                        cols=[],
-                        cells=[],
-                        image_bbox=page_bbox,
-                        raw=out.raw,
-                        mode="simple",
-                        error=True,
-                    )
-                )
-                continue
-
-            rows: List[TableRow] = []
-            cols: List[TableCol] = []
-            for el in elements:
-                pixel_bbox = denorm_bbox(el.bbox, w, h, scale=settings.BBOX_SCALE)
-                poly = _polygon_from_bbox(pixel_bbox)
-                if el.label == "Row":
-                    rows.append(TableRow(polygon=poly, row_id=len(rows)))
-                else:
-                    cols.append(TableCol(polygon=poly, col_id=len(cols)))
-
-            # Derive cells geometrically (row × column intersections)
-            cells: List[TableCell] = []
-            cell_id = 0
-            for row in rows:
-                for col in cols:
-                    inter = _intersect_bbox(row.bbox, col.bbox)
-                    if inter is None:
-                        continue
-                    cells.append(
-                        TableCell(
-                            polygon=_polygon_from_bbox(inter),
-                            row_id=row.row_id,
-                            col_id=col.col_id,
-                            cell_id=cell_id,
-                        )
-                    )
-                    cell_id += 1
-            results.append(
-                TableResult(
-                    rows=rows,
-                    cols=cols,
-                    cells=cells,
-                    image_bbox=page_bbox,
-                    raw=out.raw,
-                    mode="simple",
-                    error=False,
-                )
-            )
-        return results
+        return self.predict_full(images, counts=counts)
 
     def predict_full(
         self, images: List[Image.Image], counts: Optional[List[int]] = None
     ) -> List[TableResult]:
-        """Full-HTML path: BLOCK_PROMPT on table crops. Use when complex
-        structure (spanning cells, headers) matters and ground-truth-style
-        HTML is preferred. `counts` (one per image) shapes max_tokens."""
+        """Run BLOCK_PROMPT on table crops and return full <table> HTML."""
+        if not isinstance(images, (list, tuple)):
+            raise TypeError(
+                f"Expected a list of PIL.Image.Image objects, got {type(images).__name__}."
+            )
+        for idx, img in enumerate(images):
+            if not isinstance(img, Image.Image):
+                raise TypeError(
+                    f"Expected PIL.Image.Image at index {idx}, got {type(img).__name__}. "
+                    "Load files into PIL images first (e.g. with surya.input.load.load_from_file or PIL.Image.open)."
+                )
         if not images:
             return []
         manager = self.manager or get_default_manager()
         if counts is None:
             counts = [0] * len(images)
-        batch = []
-        for img, count in zip(images, counts):
-            batch.append(
-                BatchInputItem(
-                    image=img,
-                    prompt_type=PROMPT_TYPE_BLOCK,
-                    max_tokens=image_token_budget(
-                        count,
-                        ceiling=settings.SURYA_MAX_TOKENS_BLOCK_CEILING,
-                        floor=1024,
-                    ),
-                )
+        batch = [
+            BatchInputItem(
+                image=img,
+                prompt_type=PROMPT_TYPE_BLOCK,
+                max_tokens=image_token_budget(
+                    count,
+                    ceiling=settings.SURYA_MAX_TOKENS_BLOCK_CEILING,
+                    floor=1024,
+                ),
             )
+            for img, count in zip(images, counts)
+        ]
         outputs = manager.generate(batch)
         results: List[TableResult] = []
         for img, out in zip(images, outputs):
@@ -214,9 +84,6 @@ class TableRecPredictor:
             if out.error:
                 results.append(
                     TableResult(
-                        rows=[],
-                        cols=[],
-                        cells=[],
                         image_bbox=page_bbox,
                         raw=out.raw,
                         mode="full",
@@ -227,9 +94,6 @@ class TableRecPredictor:
             html = clean_block_html(out.raw)
             results.append(
                 TableResult(
-                    rows=[],
-                    cols=[],
-                    cells=[],
                     image_bbox=page_bbox,
                     raw=out.raw,
                     html=html,

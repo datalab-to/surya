@@ -1,4 +1,9 @@
+from types import SimpleNamespace
+import pytest
 from PIL import Image, ImageDraw
+
+from surya.inference.schema import BatchOutputItem
+from surya.table_rec import TableRecPredictor
 
 
 def test_table_rec(table_rec_predictor):
@@ -15,14 +20,35 @@ def test_table_rec(table_rec_predictor):
     assert results[0].image_bbox == [0, 0, test_image.size[0], test_image.size[1]]
     if results[0].error:
         return
+    assert results[0].mode == "full"
+    assert isinstance(results[0].html, str)
+    assert "<table" in results[0].html.lower()
 
-    rows = results[0].rows
-    cols = results[0].cols
-    cells = results[0].cells
-    assert len(rows) >= 1
-    assert len(cols) >= 1
-    # Geometric cells = rows × cols
-    assert len(cells) == len(rows) * len(cols) or len(cells) <= len(rows) * len(cols)
+
+def test_table_rec_unit_mocked():
+    fake_manager = SimpleNamespace(
+        generate=lambda batch: [
+            BatchOutputItem(
+                raw="<table><tr><th>A</th><th>B</th></tr><tr><td>1</td><td>2</td></tr></table>",
+                token_count=20,
+                error=False,
+                finish_reason="stop",
+            )
+            for _ in batch
+        ]
+    )
+    pred = TableRecPredictor(fake_manager)
+    img = draw_table([["A", "B"], [1, 2]])
+    res = pred([img])
+    assert len(res) == 1
+    assert not res[0].error
+    assert "<table>" in res[0].html
+
+
+def test_table_rec_rejects_file_paths():
+    pred = TableRecPredictor()
+    with pytest.raises(TypeError, match="PIL.Image.Image"):
+        pred(["path/to/table.png"])
 
 
 def draw_table(data, cell_width=100, cell_height=40):

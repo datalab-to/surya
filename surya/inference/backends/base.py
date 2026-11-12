@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import List
+from typing import Callable, List, Optional
 
 
 from surya.inference.schema import BatchInputItem, BatchOutputItem
@@ -12,6 +12,7 @@ class ServerHandle:
     base_url: str  # e.g. "http://127.0.0.1:8765/v1"
     model_name: str  # what gets passed in OpenAI `model` field
     spawned_by_us: bool  # if True, we manage atexit cleanup
+    cleanup_fn: Optional[Callable[[], None]] = None
 
 
 class Backend:

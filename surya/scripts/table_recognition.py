@@ -1,11 +1,10 @@
-import os
-import click
-import copy
-import json
 from collections import defaultdict
+import os
+from typing import Optional
+
+import click
 
 from surya.common.util import expand_bbox
-from surya.debug.draw import draw_bboxes_on_image
 from surya.inference import SuryaInferenceManager
 from surya.layout import LayoutPredictor
 from surya.logging import configure_logging, get_logger
@@ -16,7 +15,7 @@ configure_logging()
 logger = get_logger()
 
 
-@click.command(help="Run table recognition on an input file or folder.")
+@click.command(help="Run HTML table recognition on an input file or folder.")
 @CLILoader.common_options
 @click.option(
     "--skip_table_detection",
@@ -24,15 +23,14 @@ logger = get_logger()
     help="Tables are already cropped, so don't re-detect tables.",
     default=False,
 )
-@click.option(
-    "--mode",
-    type=click.Choice(["simple", "full"]),
-    default="full",
-    help="full: table HTML with colspan/rowspan. simple: rows+cols only (geometric cells; Surya 2 checkpoints only).",
-)
 def table_recognition_cli(
-    input_path: str, skip_table_detection: bool, mode: str, **kwargs
+    input_path: Optional[str] = None,
+    skip_table_detection: bool = False,
+    **kwargs,
 ):
+    if CLILoader.handle_skill_flags(kwargs):
+        return
+
     # Layout runs on the low-DPI render; table crops come from the high-DPI
     # image so the table_rec model sees readable cell content.
     loader = CLILoader(input_path, kwargs, highres=True)
@@ -76,7 +74,7 @@ def table_recognition_cli(
                 table_imgs.append(img.crop(bbox))
                 table_counts_per_img.append(line.count)
 
-    table_preds = table_rec_predictor(table_imgs, mode=mode)
+    table_preds = table_rec_predictor(table_imgs, counts=table_counts_per_img)
 
     img_idx = 0
     prev_count = 0
@@ -97,39 +95,12 @@ def table_recognition_cli(
         out_pred["table_idx"] = table_idx
         table_predictions[orig_name].append(out_pred)
 
-        if loader.save_images and pred.rows:
-            rows = [line.bbox for line in pred.rows]
-            cols = [line.bbox for line in pred.cols]
-            row_labels = [f"Row {line.row_id}" for line in pred.rows]
-            col_labels = [f"Col {line.col_id}" for line in pred.cols]
-            cells = [line.bbox for line in pred.cells]
-
-            rc_image = copy.deepcopy(table_img)
-            rc_image = draw_bboxes_on_image(
-                rows, rc_image, labels=row_labels, label_font_size=20, color="blue"
-            )
-            rc_image = draw_bboxes_on_image(
-                cols, rc_image, labels=col_labels, label_font_size=20, color="red"
-            )
-            rc_image.save(
+        if loader.save_images:
+            table_img.save(
                 os.path.join(
                     loader.result_path,
-                    f"{orig_name}_page{pnum + 1}_table{table_idx}_rc.png",
+                    f"{orig_name}_page{pnum + 1}_table{table_idx}.png",
                 )
             )
 
-            cell_image = copy.deepcopy(table_img)
-            cell_image = draw_bboxes_on_image(cells, cell_image, color="green")
-            cell_image.save(
-                os.path.join(
-                    loader.result_path,
-                    f"{orig_name}_page{pnum + 1}_table{table_idx}_cells.png",
-                )
-            )
-
-    with open(
-        os.path.join(loader.result_path, "results.json"), "w+", encoding="utf-8"
-    ) as f:
-        json.dump(table_predictions, f, ensure_ascii=False)
-
-    logger.info(f"Wrote results to {loader.result_path}")
+    loader.write_output(table_predictions)

@@ -30,7 +30,7 @@ logger = get_logger()
 
 def encode_image_b64(image: Image.Image) -> str:
     buf = io.BytesIO()
-    image.save(buf, format="PNG")
+    image.save(buf, format="PNG", compress_level=1)
     return base64.b64encode(buf.getvalue()).decode("ascii")
 
 
@@ -159,11 +159,12 @@ def _generate_one(
             if lp is not None:
                 content = getattr(lp, "content", None)
                 if content is not None:
-                    logprobs_content = [
-                        c.model_dump() if hasattr(c, "model_dump") else c
-                        for c in content
-                    ]
                     mean_p = _mean_token_prob(content)
+                    if item.request_logprobs:
+                        logprobs_content = [
+                            c.model_dump() if hasattr(c, "model_dump") else c
+                            for c in content
+                        ]
         return GenerationResult(
             raw=raw,
             token_count=token_count,
@@ -256,4 +257,15 @@ def chat_completions_batch(
         )
 
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        return list(executor.map(_process, batch))
+        if settings.DISABLE_TQDM or len(batch) <= 1:
+            return list(executor.map(_process, batch))
+        from tqdm import tqdm
+
+        return list(
+            tqdm(
+                executor.map(_process, batch),
+                total=len(batch),
+                desc="Surya VLM inference",
+                disable=settings.DISABLE_TQDM,
+            )
+        )

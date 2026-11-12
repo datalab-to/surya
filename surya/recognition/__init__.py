@@ -6,7 +6,7 @@ crops each block, runs BLOCK_PROMPT, returns PageOCRResult per page.
 
 from __future__ import annotations
 
-from typing import List, Optional
+from typing import Iterable, List, Optional, Set
 
 from PIL import Image
 
@@ -35,6 +35,25 @@ logger = get_logger()
 # Surya's canonical labels we shouldn't OCR (mirrors model-emitted SKIP_OCR_LABELS
 # after canonicalization).
 SKIP_CANON_LABELS = {LAYOUT_PRED_RELABEL.get(lbl, lbl) for lbl in SKIP_OCR_LABELS}
+
+
+def _resolve_skip_labels(skip_labels: Optional[Iterable[str]]) -> Set[str]:
+    if skip_labels is None:
+        return SKIP_CANON_LABELS
+    return {LAYOUT_PRED_RELABEL.get(lbl, lbl) for lbl in skip_labels} | set(skip_labels)
+
+
+def _validate_images(images: List[Image.Image]) -> None:
+    if not isinstance(images, (list, tuple)):
+        raise TypeError(
+            f"Expected a list of PIL.Image.Image objects, got {type(images).__name__}."
+        )
+    for idx, img in enumerate(images):
+        if not isinstance(img, Image.Image):
+            raise TypeError(
+                f"Expected PIL.Image.Image at index {idx}, got {type(img).__name__}. "
+                "Load files into PIL images first (e.g. with surya.input.load.load_from_file or PIL.Image.open)."
+            )
 
 # Full-page OCR regeneration schedule (chandra-style), used ONLY when
 # settings.SURYA_FULLPAGE_REGEN is True. Round 0 is greedy; a page whose output
@@ -139,6 +158,7 @@ class RecognitionPredictor:
         layout_results: Optional[List[LayoutResult]] = None,
         *,
         full_page: Optional[bool] = None,
+        skip_labels: Optional[Iterable[str]] = None,
     ) -> List[PageOCRResult]:
         """Run OCR on each page.
 
@@ -155,8 +175,10 @@ class RecognitionPredictor:
         specifically need per-block crops (e.g. for downstream merging with
         text-line detection).
         """
+        _validate_images(images)
         if not images:
             return []
+        active_skip_labels = _resolve_skip_labels(skip_labels)
         if full_page is None:
             full_page = layout_results is None
         if full_page:
@@ -166,9 +188,17 @@ class RecognitionPredictor:
                     "layout_results; layout will be used as fallback if the "
                     "full-page output devolves into a repetition loop."
                 )
-            return self._full_page_ocr(images, fallback_layout=layout_results)
+            return self._full_page_ocr(
+                images,
+                fallback_layout=layout_results,
+                skip_labels=active_skip_labels,
+            )
         if layout_results is None:
-            raise ValueError("layout_results required when full_page=False")
+            from surya.layout import LayoutPredictor
+
+            layout_results = LayoutPredictor(self.manager or get_default_manager())(
+                images
+            )
         if len(images) != len(layout_results):
             raise ValueError(
                 f"images and layout_results must be same length "
@@ -183,7 +213,10 @@ class RecognitionPredictor:
 
         for page_idx, (img, layout) in enumerate(zip(images, layout_results)):
             for block_idx, box in enumerate(layout.bboxes):
-                skip = box.label in SKIP_CANON_LABELS
+                skip = (
+                    box.label in active_skip_labels
+                    or box.raw_label in active_skip_labels
+                )
                 skipped_flags.append(skip)
                 if skip:
                     continue
@@ -215,7 +248,10 @@ class RecognitionPredictor:
             w, h = img.size
             blocks: List[BlockOCRResult] = []
             for block_idx, box in enumerate(layout.bboxes):
-                skip = box.label in SKIP_CANON_LABELS
+                skip = (
+                    box.label in active_skip_labels
+                    or box.raw_label in active_skip_labels
+                )
                 if skip:
                     blocks.append(
                         BlockOCRResult(
@@ -271,6 +307,7 @@ class RecognitionPredictor:
         self,
         images: List[Image.Image],
         fallback_layout: Optional[List[LayoutResult]] = None,
+        skip_labels: Optional[Set[str]] = None,
     ) -> List[PageOCRResult]:
         """One HIGH_ACCURACY_BBOX_PROMPT request per page; parses divs into blocks.
 
@@ -280,6 +317,9 @@ class RecognitionPredictor:
         provides per-page LayoutResults to use on fallback; otherwise the
         LayoutPredictor is invoked lazily for just the affected pages.
         """
+        active_skip_labels = (
+            skip_labels if skip_labels is not None else SKIP_CANON_LABELS
+        )
         manager = self.manager or get_default_manager()
         results: List[Optional[PageOCRResult]] = [None] * len(images)
 
@@ -323,7 +363,9 @@ class RecognitionPredictor:
                 y1 = item.bbox[3] / settings.BBOX_SCALE * h
                 polygon = [[x0, y0], [x1, y0], [x1, y1], [x0, y1]]
                 canon = LAYOUT_PRED_RELABEL.get(item.label, item.label)
-                skipped = canon in SKIP_CANON_LABELS
+                skipped = (
+                    canon in active_skip_labels or item.label in active_skip_labels
+                )
                 blocks.append(
                     BlockOCRResult(
                         polygon=polygon,
@@ -388,9 +430,55 @@ class RecognitionPredictor:
                     f"block-mode fallback"
                 )
                 fb_layouts = LayoutPredictor(self.manager)(fb_images)
-            fb_results = self.__call__(fb_images, fb_layouts, full_page=False)
+            fb_results = self.__call__(
+                fb_images,
+                fb_layouts,
+                full_page=False,
+                skip_labels=active_skip_labels,
+            )
             for fb_idx, page_idx in enumerate(needs_fallback):
                 results[page_idx] = fb_results[fb_idx]
+
+        # Rescue any full-page blocks that the user explicitly asked to OCR via
+        # custom skip_labels (e.g. Figure/Image with skip_labels=[]) or Table blocks
+        # where full-page OCR emitted plain <p> text instead of a <table> (#551).
+        rescue_batch: List[BatchInputItem] = []
+        for page_idx, page_res in enumerate(results):
+            if page_res is None or page_idx in needs_fallback:
+                continue
+            for block_idx, blk in enumerate(page_res.blocks):
+                if blk.skipped or blk.error:
+                    continue
+                needs_table_rescue = (
+                    blk.label in ("Table", "TableOfContents")
+                    and blk.html
+                    and "<table" not in blk.html.lower()
+                )
+                needs_unskipped_visual_ocr = (
+                    blk.label in SKIP_CANON_LABELS and not blk.html.strip()
+                )
+                if needs_table_rescue or needs_unskipped_visual_ocr:
+                    crop = _crop_block(images[page_idx], blk.polygon)
+                    rescue_batch.append(
+                        BatchInputItem(
+                            image=crop,
+                            prompt_type=PROMPT_TYPE_BLOCK,
+                            max_tokens=image_token_budget(
+                                1024, ceiling=settings.SURYA_MAX_TOKENS_BLOCK_CEILING
+                            ),
+                            metadata={"page_idx": page_idx, "block_idx": block_idx},
+                        )
+                    )
+        if rescue_batch:
+            rescue_outputs = manager.generate(rescue_batch)
+            for out in rescue_outputs:
+                if out.error or not out.raw:
+                    continue
+                p_idx = out.metadata["page_idx"]
+                b_idx = out.metadata["block_idx"]
+                cleaned = clean_block_html(out.raw)
+                if cleaned:
+                    results[p_idx].blocks[b_idx].html = cleaned
 
         # Backfill any still-None pages with empty results (defensive — shouldn't happen).
         out_results: List[PageOCRResult] = []

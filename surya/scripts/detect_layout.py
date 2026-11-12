@@ -1,15 +1,16 @@
-import time
-import click
-import copy
-import json
 from collections import defaultdict
+import copy
+import os
+import time
+from typing import Optional
 
+import click
+
+from surya.debug.draw import draw_polys_on_image
 from surya.inference import SuryaInferenceManager
 from surya.layout import LayoutPredictor
-from surya.debug.draw import draw_polys_on_image
 from surya.logging import configure_logging, get_logger
 from surya.scripts.config import CLILoader
-import os
 
 configure_logging()
 logger = get_logger()
@@ -17,7 +18,10 @@ logger = get_logger()
 
 @click.command(help="Detect layout of an input file or folder (PDFs or image).")
 @CLILoader.common_options
-def detect_layout_cli(input_path: str, **kwargs):
+def detect_layout_cli(input_path: Optional[str] = None, **kwargs):
+    if CLILoader.handle_skill_flags(kwargs):
+        return
+
     loader = CLILoader(input_path, kwargs)
 
     manager = SuryaInferenceManager()
@@ -27,7 +31,7 @@ def detect_layout_cli(input_path: str, **kwargs):
     layout_predictions = layout_predictor(loader.images)
 
     if loader.debug:
-        logger.debug(f"Layout took {time.time() - start} seconds")
+        logger.debug(f"Layout took {time.time() - start:.2f} seconds")
 
     if loader.save_images:
         for idx, (image, layout_pred, name) in enumerate(
@@ -43,16 +47,9 @@ def detect_layout_cli(input_path: str, **kwargs):
             )
 
     predictions_by_page = defaultdict(list)
-    for idx, (pred, name, image) in enumerate(
-        zip(layout_predictions, loader.names, loader.images)
-    ):
+    for pred, name in zip(layout_predictions, loader.names):
         out_pred = pred.model_dump()
         out_pred["page"] = len(predictions_by_page[name]) + 1
         predictions_by_page[name].append(out_pred)
 
-    with open(
-        os.path.join(loader.result_path, "results.json"), "w+", encoding="utf-8"
-    ) as f:
-        json.dump(predictions_by_page, f, ensure_ascii=False)
-
-    logger.info(f"Wrote results to {loader.result_path}")
+    loader.write_output(predictions_by_page)

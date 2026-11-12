@@ -36,7 +36,8 @@ def _strip_fences(text: str) -> str:
 
 def _coerce_bbox(bbox) -> Tuple[float, float, float, float]:
     if isinstance(bbox, str):
-        parts = [float(x) for x in bbox.replace(",", " ").split()]
+        cleaned = re.sub(r"<\|(\d+)\|>", r" \1 ", bbox)
+        parts = [float(x) for x in cleaned.replace(",", " ").split()]
     else:
         parts = [float(x) for x in bbox]
     if len(parts) != 4:
@@ -76,58 +77,46 @@ def parse_layout(text: str) -> List[ParsedLayoutBlock]:
     return out
 
 
-# ---- Table rec (TABLE_REC_PROMPT) ------------------------------------------
-
-
-@dataclass
-class ParsedTableElement:
-    label: str  # "Row" or "Col"
-    bbox: Tuple[float, float, float, float]
-
-
-def parse_table_rec(text: str) -> List[ParsedTableElement]:
-    """Parse JSON array of {label: "Row"|"Col", bbox: "x0 y0 x1 y1"} from
-    TABLE_REC_PROMPT output. Returns a flat list of Row + Col elements;
-    cell derivation is the caller's job."""
-    cleaned = _strip_fences(text)
-    m = _JSON_ARRAY_RE.search(cleaned)
-    if not m:
-        raise ValueError(f"No JSON array found in table_rec output: {text[:500]!r}")
-    raw = json.loads(m.group(0))
-    out: List[ParsedTableElement] = []
-    for item in raw:
-        label = str(item.get("label", "")).strip()
-        if label not in ("Row", "Col"):
-            continue
-        try:
-            bbox = _coerce_bbox(item["bbox"])
-        except (KeyError, ValueError):
-            continue
-        out.append(ParsedTableElement(label=label, bbox=bbox))
-    return out
-
-
 # ---- Block HTML (BLOCK_PROMPT for full table path / general block path) ---
+
+_CELL_OPEN_RE = re.compile(r"<(?:td|th|tr)(?=[\s>/])", re.I)
+_CELL_CLOSE_RE = re.compile(r"</(?:td|th|tr)\s*>", re.I)
+_DANGEROUS_TAG_BLOCK_RE = re.compile(
+    r"<(script|iframe|object|embed|style|applet)\b[^>]*>.*?</\1\s*>",
+    re.I | re.DOTALL,
+)
+_DANGEROUS_TAG_SINGLE_RE = re.compile(
+    r"</?(?:script|iframe|object|embed|style|link|meta|base|applet)\b[^<>]*>",
+    re.I,
+)
+_EVENT_HANDLER_ATTR_RE = re.compile(
+    r"""\s+on[a-z0-9_]+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s"'=<>`]+)""",
+    re.I,
+)
+_JS_URL_ATTR_RE = re.compile(
+    r"""\s+(?:href|src|action|formaction|xlink:href)\s*=\s*(?:"\s*(?:javascript|vbscript|data\s*:\s*text/html)[^"]*"|'\s*(?:javascript|vbscript|data\s*:\s*text/html)[^']*'|(?:\s*(?:javascript|vbscript|data\s*:\s*text/html)[^\s"'=<>`]*))""",
+    re.I,
+)
+
+
+def sanitize_ocr_html(html: str) -> str:
+    """Strip executable tags, inline event handlers, and javascript:/data:text/html URLs from model HTML."""
+    if not html:
+        return html
+    cleaned = _DANGEROUS_TAG_BLOCK_RE.sub("", html)
+    cleaned = _DANGEROUS_TAG_SINGLE_RE.sub("", cleaned)
+    cleaned = _EVENT_HANDLER_ATTR_RE.sub("", cleaned)
+    cleaned = _JS_URL_ATTR_RE.sub("", cleaned)
+    return cleaned
 
 
 def _has_unclosed_cells(html: str) -> bool:
     """True when td/th/tr opens outnumber their closers (compact models omit </td></th></tr>)."""
-
-    def n(pat):
-        return len(re.findall(pat, html, flags=re.I))
-
-    opens = n(r"<(?:td|th|tr)(?=[\s>/])")
-    closes = n(r"</(?:td|th|tr)\s*>")
-    return opens > closes
+    return len(_CELL_OPEN_RE.findall(html)) > len(_CELL_CLOSE_RE.findall(html))
 
 
 def clean_block_html(html: str) -> str:
-    """Light cleanup of model-emitted HTML for a single block.
-
-    Strips code fences, leading/trailing whitespace. Does NOT validate against
-    ALLOWED_TAGS — the model is expected to comply, and downstream consumers
-    can sanitize further if needed.
-    """
+    """Clean and sanitize model-emitted HTML for a single block."""
     cleaned = _strip_fences(html).strip()
     if "<|" in cleaned or _has_unclosed_cells(
         cleaned
@@ -141,7 +130,7 @@ def clean_block_html(html: str) -> str:
         from surya.inference.merged_cells import convert_merged_cells
 
         cleaned = convert_merged_cells(cleaned)
-    return cleaned
+    return sanitize_ocr_html(cleaned)
 
 
 # ---- Full-page fallback (HIGH_ACCURACY_BBOX_PROMPT) -----------------------
@@ -229,7 +218,7 @@ def parse_full_page_html(text: str) -> List[ParsedFullPageBlock]:
             del tag["data-bbox"]
         for tag in div.find_all(attrs={"data-label": True}):
             del tag["data-label"]
-        inner = "".join(str(c) for c in div.contents).strip()
+        inner = sanitize_ocr_html("".join(str(c) for c in div.contents).strip())
         out.append(
             ParsedFullPageBlock(
                 label=str(label),

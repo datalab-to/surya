@@ -1,15 +1,11 @@
 import os
-
-os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"
-
 import pytest
 from PIL import Image, ImageDraw
 
-from surya.detection import DetectionPredictor
 from surya.inference import SuryaInferenceManager
 from surya.layout import LayoutPredictor
-from surya.ocr_error import OCRErrorPredictor
 from surya.recognition import RecognitionPredictor
+from surya.settings import settings
 from surya.table_rec import TableRecPredictor
 
 
@@ -18,6 +14,8 @@ def manager() -> SuryaInferenceManager:
     """Eagerly start the VLM backend. If the runner has neither vllm nor
     llama-server available (e.g. GitHub Actions ubuntu / windows runners),
     skip every VLM-dependent test in this session instead of failing them."""
+    if "SURYA_INFERENCE_STARTUP_TIMEOUT" not in os.environ:
+        settings.SURYA_INFERENCE_STARTUP_TIMEOUT = 30.0
     m = SuryaInferenceManager(lazy=True)
     try:
         m.start()
@@ -43,16 +41,6 @@ def recognition_predictor(manager) -> RecognitionPredictor:
 @pytest.fixture(scope="session")
 def table_rec_predictor(manager) -> TableRecPredictor:
     return TableRecPredictor(manager)
-
-
-@pytest.fixture(scope="session")
-def detection_predictor() -> DetectionPredictor:
-    return DetectionPredictor()
-
-
-@pytest.fixture(scope="session")
-def ocr_error_predictor() -> OCRErrorPredictor:
-    return OCRErrorPredictor()
 
 
 @pytest.fixture()

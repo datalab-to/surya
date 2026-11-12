@@ -27,11 +27,16 @@ BLANK_PIXEL_FRACTION = 0.99
 UNIFORM_COLOR_STD = 8.0
 
 
+def _as_rgb_array(image: Image.Image) -> np.ndarray:
+    rgb = image if image.mode == "RGB" else image.convert("RGB")
+    return np.asarray(rgb)
+
+
 def near_white_fraction(
     image: Image.Image, white_threshold: int = BLANK_WHITE_THRESHOLD
 ) -> float:
     """Fraction of pixels where every RGB channel ≥ ``white_threshold``."""
-    arr = np.asarray(image.convert("RGB"))
+    arr = _as_rgb_array(image)
     if arr.size == 0:
         return 0.0
     return float(np.all(arr >= white_threshold, axis=-1).mean())
@@ -50,7 +55,7 @@ def is_blank_region(
     Returns False for empty (0-pixel) crops so callers don't accidentally
     treat a degenerate bbox as blank.
     """
-    arr = np.asarray(image.convert("RGB"))
+    arr = _as_rgb_array(image)
     if arr.size == 0:
         return False
     if np.all(arr >= white_threshold, axis=-1).mean() > blank_pixel_fraction:

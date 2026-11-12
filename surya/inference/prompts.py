@@ -6,7 +6,6 @@ from surya.inference.schema import (
     PROMPT_TYPE_HIGH_ACCURACY_BBOX as PROMPT_TYPE_HIGH_ACCURACY_BBOX,
 )
 from surya.inference.schema import PROMPT_TYPE_LAYOUT as PROMPT_TYPE_LAYOUT
-from surya.inference.schema import PROMPT_TYPE_TABLE_REC as PROMPT_TYPE_TABLE_REC
 
 ALLOWED_TAGS = [
     "math",
@@ -74,11 +73,6 @@ LAYOUT_PROMPT = (
 
 BLOCK_PROMPT = "OCR this block image to HTML."
 
-TABLE_REC_PROMPT = (
-    "Output the table rows then columns as JSON. Each entry is a dict with "
-    '"label" ("Row" or "Col") and "bbox" (x0 y0 x1 y1, normalized 0-1000).'
-)
-
 HIGH_ACCURACY_BBOX_PROMPT = (
     "OCR this image to HTML. Each block is a div with data-label and data-bbox "
     "(x0 y0 x1 y1, normalized 0-1000)."
@@ -88,7 +82,6 @@ HIGH_ACCURACY_BBOX_PROMPT = (
 PROMPT_MAPPING = {
     "layout": LAYOUT_PROMPT,
     "block": BLOCK_PROMPT,
-    "table_rec": TABLE_REC_PROMPT,
     "high_accuracy_bbox": HIGH_ACCURACY_BBOX_PROMPT,
 }
 
@@ -127,32 +120,11 @@ LAYOUT_JSON_SCHEMA = {
             "label": {"type": "string", "enum": LAYOUT_LABEL_SET},
             "bbox": {
                 "type": "string",
-                "pattern": r"^\d{1,4} \d{1,4} \d{1,4} \d{1,4}$",
+                "pattern": r"^[0-9]{1,4} [0-9]{1,4} [0-9]{1,4} [0-9]{1,4}$",
             },
             "count": {"type": "integer", "minimum": 0, "maximum": 10000},
         },
         "required": ["label", "bbox", "count"],
-        "additionalProperties": False,
-    },
-}
-
-
-# JSON schema for TABLE_REC_PROMPT — array of {label: Row|Col, bbox: "x0 y0 x1 y1"}.
-TABLE_REC_LABEL_SET = ["Row", "Col"]
-
-TABLE_REC_JSON_SCHEMA = {
-    "type": "array",
-    "maxItems": 200,
-    "items": {
-        "type": "object",
-        "properties": {
-            "label": {"type": "string", "enum": TABLE_REC_LABEL_SET},
-            "bbox": {
-                "type": "string",
-                "pattern": r"^\d{1,4} \d{1,4} \d{1,4} \d{1,4}$",
-            },
-        },
-        "required": ["label", "bbox"],
         "additionalProperties": False,
     },
 }

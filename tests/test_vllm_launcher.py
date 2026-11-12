@@ -1,4 +1,4 @@
-"""The vllm launcher builds the docker command the package users get: image tag and MTP flag (no GPU, docker mocked)."""
+"""The vllm launcher builds the container command: image tag, MTP flag, host binding, and Podman support."""
 
 import json
 from types import SimpleNamespace
@@ -7,12 +7,17 @@ from surya.inference.backends import vllm
 from surya.settings import settings
 
 
-def _argv(monkeypatch, has_mtp):
+def _argv(monkeypatch, has_mtp, runtime_bin="/usr/bin/docker"):
     captured = {}
     monkeypatch.setattr(settings, "SURYA_INFERENCE_URL", None)
+    monkeypatch.setattr(settings, "SURYA_CONTAINER_RUNTIME", None)
     monkeypatch.setattr(settings, "VLLM_ENABLE_MTP", None)
     monkeypatch.setattr(vllm, "_checkpoint_has_mtp_head", lambda ckpt: has_mtp)
-    monkeypatch.setattr(vllm.shutil, "which", lambda name: "/usr/bin/docker")
+    monkeypatch.setattr(
+        vllm.shutil,
+        "which",
+        lambda name: runtime_bin if name in runtime_bin else None,
+    )
     monkeypatch.setattr(
         vllm.subprocess,
         "run",
@@ -43,6 +48,8 @@ def test_launcher_image_and_no_mtp(monkeypatch):
     cmd = _argv(monkeypatch, has_mtp=False)
     assert "vllm/vllm-openai:v0.25.1" in cmd
     assert "--speculative-config" not in cmd
+    # Host-bound port mapping (#547, #548)
+    assert "127.0.0.1:8123:8000" in cmd
 
 
 def test_launcher_mtp_when_head_present(monkeypatch):
@@ -52,3 +59,11 @@ def test_launcher_mtp_when_head_present(monkeypatch):
         "method": "mtp",
         "num_speculative_tokens": settings.VLLM_MTP_TOKENS,
     }
+
+
+def test_launcher_podman_fallback(monkeypatch):
+    cmd = _argv(monkeypatch, has_mtp=False, runtime_bin="/usr/bin/podman")
+    assert cmd[0] == "/usr/bin/podman"
+    assert "--device" in cmd
+    assert "nvidia.com/gpu=0" in cmd
+    assert "--security-opt=label=disable" in cmd

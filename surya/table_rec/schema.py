@@ -38,11 +38,11 @@ class TableCell(PolygonBox):
 
 
 class TableResult(BaseModel):
-    rows: List[TableRow]
-    cols: List[TableCol]
-    cells: List[TableCell]
+    rows: List[TableRow] = []
+    cols: List[TableCol] = []
+    cells: List[TableCell] = []
     image_bbox: List[float]
     raw: Optional[str] = None  # raw model output
-    html: Optional[str] = None  # populated when full-path was used
-    mode: str = "simple"  # "simple" | "full"
+    html: Optional[str] = None  # full <table> HTML output
+    mode: str = "full"
     error: bool = False

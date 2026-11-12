@@ -5,8 +5,10 @@ from __future__ import annotations
 import json
 import math
 import os
+import shlex
 import shutil
 import subprocess
+from pathlib import Path
 from typing import List, Optional
 
 from openai import OpenAI
@@ -66,7 +68,11 @@ def _checkpoint_has_mtp_head(checkpoint: str) -> bool:
     try:
         from huggingface_hub import hf_hub_download
 
-        with open(hf_hub_download(checkpoint, "config.json")) as f:
+        try:
+            cfg_path = hf_hub_download(checkpoint, "config.json", local_files_only=True)
+        except Exception:
+            cfg_path = hf_hub_download(checkpoint, "config.json")
+        with open(cfg_path) as f:
             cfg = json.load(f)
     except Exception as e:  # offline or a local path: try a local config.json
         local = os.path.join(checkpoint, "config.json")
@@ -97,14 +103,49 @@ def _mtp_enabled() -> bool:
     return has
 
 
-def _resolve_docker_binary() -> str:
-    found = shutil.which("docker")
-    if found:
-        return found
+def _resolve_container_runtime() -> str:
+    """Resolve the container runtime binary (`docker` or `podman`)."""
+    configured = settings.SURYA_CONTAINER_RUNTIME
+    if configured:
+        if os.path.isfile(configured):
+            return configured
+        found = shutil.which(configured)
+        if found:
+            return found
+        raise SpawnError(
+            f"SURYA_CONTAINER_RUNTIME={configured!r} not found in PATH."
+        )
+    for candidate in ("docker", "podman"):
+        found = shutil.which(candidate)
+        if found:
+            return found
     raise SpawnError(
-        "docker binary not found. Install Docker (https://docs.docker.com/get-docker/) "
-        "and ensure the daemon is running."
+        "Neither docker nor podman binary found. Install Docker (https://docs.docker.com/get-docker/) "
+        "or Podman (https://podman.io/) and ensure the runtime is available."
     )
+
+
+def _resolve_docker_binary() -> str:
+    """Backwards-compatible alias for _resolve_container_runtime()."""
+    return _resolve_container_runtime()
+
+
+def _runtime_kind(binary_path: str) -> str:
+    name = Path(binary_path).name.lower()
+    return "podman" if "podman" in name else "docker"
+
+
+def _gpu_args(runtime_kind: str, gpus: str) -> List[str]:
+    if runtime_kind == "podman":
+        # Podman uses CDI (--device nvidia.com/gpu=...)
+        devices = [g.strip() for g in gpus.split(",") if g.strip()]
+        if not devices or devices == ["all"]:
+            return ["--device", "nvidia.com/gpu=all", "--security-opt=label=disable"]
+        args = ["--security-opt=label=disable"]
+        for dev in devices:
+            args.extend(["--device", f"nvidia.com/gpu={dev}"])
+        return args
+    return ["--runtime", "nvidia", "--gpus", f"device={gpus}"]
 
 
 def _health_url(port: int) -> str:
@@ -173,28 +214,27 @@ class VllmBackend(Backend):
             )
             return self.handle
 
-        docker = _resolve_docker_binary()
+        runtime_bin = _resolve_container_runtime()
+        runtime_kind = _runtime_kind(runtime_bin)
         max_batched_tokens, max_num_seqs = _gpu_settings(settings.VLLM_GPU_TYPE)
         self._max_num_seqs = max_num_seqs
 
         def spawn_fn(port: int) -> SpawnHandle:
             container_name = f"surya-vllm-{port}"
             hf_cache = os.path.expanduser(settings.DOCKER_HF_CACHE_PATH)
+            host_bind = settings.SURYA_INFERENCE_HOST or "127.0.0.1"
             cmd = [
-                docker,
+                runtime_bin,
                 "run",
                 "--rm",
                 "-d",
                 "--name",
                 container_name,
-                "--runtime",
-                "nvidia",
-                "--gpus",
-                f"device={settings.VLLM_GPUS}",
+                *_gpu_args(runtime_kind, settings.VLLM_GPUS),
                 "-v",
                 f"{hf_cache}:/root/.cache/huggingface",
                 "-p",
-                f"{port}:8000",
+                f"{host_bind}:{port}:8000",
                 "--ipc=host",
                 settings.VLLM_DOCKER_IMAGE,
                 "--model",
@@ -224,14 +264,19 @@ class VllmBackend(Backend):
                     }
                 )
                 cmd.extend(["--speculative-config", spec_config])
-            for extra in (settings.VLLM_EXTRA_ARGS or "").split():
+            for extra in shlex.split(settings.VLLM_EXTRA_ARGS or ""):
                 cmd.append(extra)
             logger.info(f"Spawning: {' '.join(cmd)}")
             result = subprocess.run(cmd, capture_output=True, text=True, check=False)
             if result.returncode != 0:
-                raise SpawnError(f"docker run failed: {result.stderr or result.stdout}")
+                raise SpawnError(
+                    f"{runtime_kind} run failed: {result.stderr or result.stdout}"
+                )
             return SpawnHandle(
-                pid=None, cleanup_id=container_name, cleanup_kind="docker"
+                pid=None,
+                cleanup_id=container_name,
+                cleanup_kind="docker",
+                runtime=runtime_kind,
             )
 
         spawned = attach_or_spawn(
@@ -246,6 +291,7 @@ class VllmBackend(Backend):
             base_url=spawned.base_url,
             model_name=spawned.model_name,
             spawned_by_us=spawned.spawned_by_us,
+            cleanup_fn=getattr(spawned, "cleanup_fn", None),
         )
         self._client = OpenAI(
             api_key=settings.VLLM_API_KEY,
@@ -254,6 +300,16 @@ class VllmBackend(Backend):
         return self.handle
 
     def stop(self) -> None:
+        if self._client is not None:
+            try:
+                self._client.close()
+            except Exception:
+                pass
+        if self.handle is not None and self.handle.cleanup_fn is not None:
+            try:
+                self.handle.cleanup_fn()
+            except Exception:
+                pass
         self.handle = None
         self._client = None
 

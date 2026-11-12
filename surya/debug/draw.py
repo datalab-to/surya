@@ -2,6 +2,22 @@ from PIL import ImageDraw, ImageFont
 
 from surya.debug.fonts import get_font_path
 from surya.debug.text import get_text_size
+from surya.logging import get_logger
+
+logger = get_logger()
+
+
+def _load_font(font_size: int):
+    font_path = get_font_path()
+    if font_path:
+        try:
+            return ImageFont.truetype(font_path, font_size)
+        except Exception as e:
+            logger.warning(f"Failed to load font {font_path}: {e}")
+    try:
+        return ImageFont.load_default(size=font_size)
+    except TypeError:
+        return ImageFont.load_default()
 
 
 def draw_bboxes_on_image(
@@ -28,8 +44,7 @@ def draw_polys_on_image(
     color: str | list = "red",
 ):
     draw = ImageDraw.Draw(image)
-    font_path = get_font_path()
-    label_font = ImageFont.truetype(font_path, label_font_size)
+    label_font = _load_font(label_font_size)
 
     for i in range(len(corners)):
         poly = corners[i]
@@ -54,7 +69,7 @@ def draw_polys_on_image(
             try:
                 draw.rectangle(box_position, fill="white")
             except Exception as e:
-                print(f"Error drawing rectangle at {box_position}: {e}")
+                logger.debug(f"Skipping label box at {box_position}: {e}")
                 continue
             draw.text(
                 text_position,

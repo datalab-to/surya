@@ -1,10 +1,38 @@
-import os
+"""Surya: VLM-backed document OCR, layout analysis, and HTML table recognition."""
 
-# The rf-detr fast detector's DINOv2 pos-embed interpolation uses an antialiased-bicubic
-# op that has no MPS kernel. PyTorch reads PYTORCH_ENABLE_MPS_FALLBACK at `import torch`,
-# so set it here — before torch is imported — to let that one op fall back to CPU while
-# the rest of the model runs on MPS. This is only effective when surya is imported before
-# torch; when torch is already loaded, `_pick_device` (surya.common.rfdetr_torch) probes
-# the op at runtime and falls back to CPU device selection instead. setdefault so we never
-# clobber a value the user set deliberately.
-os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
+from __future__ import annotations
+
+__version__ = "0.24.0"
+
+__all__ = [
+    "__version__",
+    "SuryaInferenceManager",
+    "get_default_manager",
+    "LayoutPredictor",
+    "RecognitionPredictor",
+    "TableRecPredictor",
+]
+
+
+def __getattr__(name: str):
+    if name in ("SuryaInferenceManager", "get_default_manager"):
+        from surya.inference import SuryaInferenceManager, get_default_manager
+
+        return (
+            SuryaInferenceManager
+            if name == "SuryaInferenceManager"
+            else get_default_manager
+        )
+    if name == "LayoutPredictor":
+        from surya.layout import LayoutPredictor
+
+        return LayoutPredictor
+    if name == "RecognitionPredictor":
+        from surya.recognition import RecognitionPredictor
+
+        return RecognitionPredictor
+    if name == "TableRecPredictor":
+        from surya.table_rec import TableRecPredictor
+
+        return TableRecPredictor
+    raise AttributeError(f"module 'surya' has no attribute {name!r}")

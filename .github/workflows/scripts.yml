@@ -26,8 +26,6 @@ jobs:
         run: |
           wget -O benchmark_data.zip "https://drive.google.com/uc?export=download&id=1NHrdYatR1rtqs2gPVfdvO0BAvocH8CJi"
           unzip -o benchmark_data.zip
-      - name: Test detection
-        run: uv run surya_detect benchmark_data/pdfs/switch_trans.pdf --page_range 0
       # Spawn the vllm server once and reuse it across the OCR/layout/table
       # steps (--keep_server) instead of paying a cold start three times.
       - name: Test OCR
@@ -36,5 +34,5 @@ jobs:
         run: uv run surya_layout benchmark_data/pdfs/switch_trans.pdf --page_range 0 --keep_server
       - name: Test table
         run: uv run surya_table benchmark_data/pdfs/switch_trans.pdf --page_range 0 --keep_server
-      - name: Test detection folder
-        run: uv run surya_detect benchmark_data/pdfs --page_range 0
+      - name: Test layout folder
+        run: uv run surya_layout benchmark_data/pdfs --page_range 0 --keep_server

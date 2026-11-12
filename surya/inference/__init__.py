@@ -24,27 +24,10 @@ logger = get_logger()
 def _has_nvidia_gpu() -> bool:
     """True if an NVIDIA GPU is present on this host.
 
-    We deliberately do *not* rely solely on ``torch.cuda.is_available()``:
-    the installed torch wheel's CUDA build can be newer than the host driver
-    (PyPI's default wheel tracks the latest CUDA), in which case torch reports
-    no CUDA even on a perfectly good GPU box. That would silently route us to
-    the CPU llama.cpp backend on a machine that should be running vllm. So we
-    take torch's word when it *does* see CUDA, and otherwise fall back to
-    probing for the GPU directly via ``nvidia-smi``.
+    Checks the kernel device node first (instant, load-independent, and avoids
+    importing torch), then falls back to ``nvidia-smi -L``.
     """
-    try:
-        import torch
-
-        if torch.cuda.is_available():
-            return True
-    except Exception:
-        pass
-
-    # Instant, load-independent check: the NVIDIA device node only exists when
-    # a GPU + driver are present. Preferred over nvidia-smi because nvidia-smi
-    # can block for several seconds on a GPU under heavy load, which would race
-    # a timeout and falsely report "no GPU".
-    if os.path.exists("/dev/nvidia0"):
+    if os.path.exists("/dev/nvidia0") or os.path.exists("/proc/driver/nvidia/version"):
         return True
 
     nvidia_smi = shutil.which("nvidia-smi")
